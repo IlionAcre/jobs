@@ -1,0 +1,17 @@
+upwork:
+  base_search_url: "https://www.upwork.com/nx/search/jobs/"
+  quote_terms: false
+
+selenium:
+  headed: true
+  incognito: true
+  uc_mode: true
+  start_maximized: true
+
+waits:
+  wait_after_open_s: 2.0
+  wait_for_job_tiles: true
+  job_tile_css: 'article[data-test="JobTile"]'
+  wait_timeout_s: 30.0
+  pause_for_manual_solve: true
+  post_enter_wait_s: 1.0

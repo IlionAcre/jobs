@@ -1,0 +1,16 @@
+[project]
+name = "upwork"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "aiogram>=3.24.0",
+    "curl-cffi>=0.14.0",
+    "lxml>=6.0.2",
+    "psycopg[binary]>=3.3.2",
+    "pydantic>=2.12.5",
+    "python-dotenv>=1.2.1",
+    "seleniumbase>=4.45.7",
+    "sqlalchemy>=2.0.45",
+]
