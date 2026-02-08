@@ -6,11 +6,15 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "aiogram>=3.24.0",
+    "camoufox[geoip]>=0.4.11",
     "curl-cffi>=0.14.0",
     "lxml>=6.0.2",
+    "playwright>=1.58.0",
     "psycopg[binary]>=3.3.2",
     "pydantic>=2.12.5",
     "python-dotenv>=1.2.1",
+    "pyyaml>=6.0.2",
+    "redis>=7.1.0",
     "seleniumbase>=4.45.7",
     "sqlalchemy>=2.0.45",
 ]

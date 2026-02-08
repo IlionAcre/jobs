@@ -33,3 +33,8 @@ def make_pg_engine(dsn: str, *, pool_pre_ping: bool = True) -> Engine:
     Create a SQLAlchemy Engine for Postgres.
     """
     return create_engine(dsn, pool_pre_ping=pool_pre_ping)
+
+
+# Alias for convenience
+make_engine = make_pg_engine
+

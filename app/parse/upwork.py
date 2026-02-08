@@ -117,7 +117,9 @@ def make_jobtile(**candidate: Any) -> JobTile:
     for name, f in fields.items():
         has_default = not (f.default is MISSING and f.default_factory is MISSING)  # type: ignore
         if not has_default and name not in payload:
-            if name in {"tags", "tokens"}:
+            if name == "tags":
+                payload[name] = ()
+            elif name == "tokens":
                 payload[name] = []
             else:
                 payload[name] = None
@@ -188,7 +190,7 @@ def parse_jobs(html_text: str, *, base_url: str = BASE_URL) -> List[JobTile]:
         location = best_effort_location(art)
         job_type = job_type_text
         duration = est_time or duration_text
-        tags = tokens
+        tags = tuple(tokens)
 
         jobs.append(
             make_jobtile(

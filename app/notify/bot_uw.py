@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+import secrets
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from aiogram import Bot, Dispatcher, F
@@ -11,39 +13,70 @@ from dotenv import load_dotenv
 
 from app.store.core import (
     PLATFORM_UPWORK,
-    create_or_get_query,
+    create_auth_link,
+    create_or_get_query_for_user,
     ensure_core_schema_and_tables,
+    get_portal_user_id,
+    is_subscription_active,
     list_subscriptions_for_chat,
     remove_subscription,
     set_subscription_enabled,
     subscribe_chat_to_query,
-    update_query_settings_for_chat,
     upsert_chat,
+    upsert_user_seen,
 )
 from app.store.db import build_db_dsn_from_env, make_pg_engine
 
 
-DEFAULT_POLL_SECONDS: int = 60
-DEFAULT_TOP_N: int = 25
+DEFAULT_POLL_SECONDS = 60
+DEFAULT_TOP_N = 25
 
+PORTAL_BASE_URL = os.environ.get("PORTAL_BASE_URL", "https://example.com").rstrip("/")
 
-HELP_TEXT = (
-    "Upwork monitor bot:\n\n"
-    "/add <terms...>     Add a query (example: /add python scraping)\n"
-    "/list               List your subscriptions\n"
-    "/remove <sub_id>    Remove a subscription (from /list)\n"
-    "/interval <sec>     Set poll interval for ALL your Upwork queries\n"
-    "/top <n>            Set top N for ALL your Upwork queries\n"
-    "/stop               Disable all your subscriptions\n"
-    "/resume             Enable all your subscriptions\n"
-    "/status             Show quick status\n"
+HELP = (
+    "Commands:\n"
+    "/start\n"
+    "/query <expression>\n"
+    "/queries\n"
+    "/remove <sub_id>\n"
+    "/pause\n"
+    "/resume\n"
+    "/status\n\n"
+    "Query examples:\n"
+    "  /query python AND scraping\n"
+    "  /query python OR javascript AND selenium\n"
 )
 
 
 def _chat_title(msg: Message) -> Optional[str]:
-    # For groups/channels
     t = getattr(msg.chat, "title", None)
     return str(t) if t else None
+
+
+def _compile_query(raw: str) -> str:
+    """
+    Minimal AND/OR compiler:
+      - AND is treated as whitespace
+      - OR is preserved
+
+    Example:
+      "python AND scraping" -> "python scraping"
+      "python OR scraping AND selenium" -> "python OR scraping selenium"
+    """
+    s = " ".join(raw.strip().split())
+    tokens = s.split()
+
+    out = []
+    for tok in tokens:
+        up = tok.upper()
+        if up == "AND":
+            continue
+        if up == "OR":
+            out.append("OR")
+            continue
+        out.append(tok)
+
+    return " ".join(out).strip()
 
 
 async def main() -> None:
@@ -59,118 +92,202 @@ async def main() -> None:
     bot = Bot(token=token)
     dp = Dispatcher()
 
+    async def gate_or_prompt(msg: Message) -> Optional[str]:
+        """
+        Returns portal_user_id if user is linked + subscription active.
+        Otherwise sends a prompt and returns None.
+        """
+        chat_id = int(msg.chat.id)
+        telegram_user_id = int(msg.from_user.id) if msg.from_user else 0
+
+        upsert_chat(engine, chat_id, str(msg.chat.type), _chat_title(msg))
+
+        if msg.from_user:
+            upsert_user_seen(
+                engine,
+                telegram_user_id,
+                username=msg.from_user.username,
+                first_name=msg.from_user.first_name,
+                last_name=msg.from_user.last_name,
+            )
+
+        portal_user_id = get_portal_user_id(engine, telegram_user_id)
+
+        # Not linked: generate one-time link token
+        if not portal_user_id:
+            link_token = secrets.token_urlsafe(24)
+            expires_at = datetime.now(timezone.utc) + timedelta(minutes=15)
+
+            create_auth_link(
+                engine,
+                token=link_token,
+                telegram_user_id=telegram_user_id,
+                chat_id=chat_id,
+                expires_at=expires_at,
+            )
+
+            link_url = f"{PORTAL_BASE_URL}/link?token={link_token}"
+            await msg.answer(
+                "🔐 You’re not linked yet.\n"
+                "Login/link your Telegram here:\n"
+                f"{link_url}\n\n"
+                "After linking, send /start again."
+            )
+            return None
+
+        # Linked but subscription inactive
+        if not is_subscription_active(engine, portal_user_id):
+            subscribe_url = f"{PORTAL_BASE_URL}/subscribe"
+            await msg.answer(
+                "💳 Your subscription is not active.\n"
+                "Subscribe here:\n"
+                f"{subscribe_url}\n\n"
+                "After subscribing, send /start again."
+            )
+            return None
+
+        return portal_user_id
+
     @dp.message(Command("start"))
     async def cmd_start(msg: Message) -> None:
-        upsert_chat(engine, int(msg.chat.id), str(msg.chat.type), _chat_title(msg))
-        await msg.answer("✅ Connected.\n\n" + HELP_TEXT)
-
-    @dp.message(Command("help"))
-    async def cmd_help(msg: Message) -> None:
-        await msg.answer(HELP_TEXT)
-
-    @dp.message(Command("add"))
-    async def cmd_add(msg: Message) -> None:
-        upsert_chat(engine, int(msg.chat.id), str(msg.chat.type), _chat_title(msg))
-
-        parts = (msg.text or "").split(maxsplit=1)
-        if len(parts) < 2 or not parts[1].strip():
-            await msg.answer("Usage: /add <terms...>\nExample: /add python scraping")
+        portal_user_id = await gate_or_prompt(msg)
+        if not portal_user_id:
             return
-
-        terms_raw = parts[1].strip()
-
-        # NOTE: quote_terms is currently controlled by your app/config/config.yaml for scraping.
-        # For now, store quote_terms=False in DB; you can extend UI later.
-        quote_terms = False
-
-        qid = create_or_get_query(
-            engine,
-            platform=PLATFORM_UPWORK,
-            terms_raw=terms_raw,
-            quote_terms=quote_terms,
-            poll_seconds=DEFAULT_POLL_SECONDS,
-            top_n=DEFAULT_TOP_N,
-        )
-        sub_id = subscribe_chat_to_query(engine, int(msg.chat.id), qid)
-
-        await msg.answer(f"✅ Added subscription #{sub_id}\nQuery: {terms_raw!r}")
-
-    @dp.message(Command("list"))
-    async def cmd_list(msg: Message) -> None:
-        upsert_chat(engine, int(msg.chat.id), str(msg.chat.type), _chat_title(msg))
 
         rows = list_subscriptions_for_chat(engine, int(msg.chat.id), platform=PLATFORM_UPWORK)
         if not rows:
-            await msg.answer("No subscriptions yet. Use /add python scraping")
-            return
-
-        lines = ["📌 Your subscriptions:"]
-        for r in rows:
-            lines.append(
-                f"- sub_id={r['subscription_id']} | enabled={r['enabled']} | "
-                f"interval={r['poll_seconds']}s | top={r['top_n']} | terms={r['terms_raw']!r}"
+            await msg.answer(
+                "✅ Linked + active.\n"
+                "No queries yet.\n\n"
+                "Create one with:\n"
+                "/query python AND scraping\n\n"
+                + HELP
             )
-        await msg.answer("\n".join(lines))
-
-    @dp.message(Command("remove"))
-    async def cmd_remove(msg: Message) -> None:
-        parts = (msg.text or "").split()
-        if len(parts) != 2 or not parts[1].isdigit():
-            await msg.answer("Usage: /remove <sub_id>\nGet sub_id from /list")
             return
 
-        sid = int(parts[1])
-        ok = remove_subscription(engine, int(msg.chat.id), sid)
-        await msg.answer("✅ Removed." if ok else "Not found (or not yours).")
-
-    @dp.message(Command("interval"))
-    async def cmd_interval(msg: Message) -> None:
-        parts = (msg.text or "").split()
-        if len(parts) != 2 or not parts[1].isdigit():
-            await msg.answer("Usage: /interval <seconds>\nExample: /interval 60")
-            return
-
-        sec = int(parts[1])
-        if sec < 15:
-            await msg.answer("⚠️ 15 seconds minimum recommended.")
-        n = update_query_settings_for_chat(engine, int(msg.chat.id), platform=PLATFORM_UPWORK, poll_seconds=sec)
-        await msg.answer(f"✅ Updated interval for {n} query(s) to {sec}s")
-
-    @dp.message(Command("top"))
-    async def cmd_top(msg: Message) -> None:
-        parts = (msg.text or "").split()
-        if len(parts) != 2 or not parts[1].isdigit():
-            await msg.answer("Usage: /top <n>\nExample: /top 25")
-            return
-
-        n_top = int(parts[1])
-        n = update_query_settings_for_chat(engine, int(msg.chat.id), platform=PLATFORM_UPWORK, top_n=n_top)
-        await msg.answer(f"✅ Updated top_n for {n} query(s) to {n_top}")
-
-    @dp.message(Command("stop"))
-    async def cmd_stop(msg: Message) -> None:
-        n = set_subscription_enabled(engine, int(msg.chat.id), enabled=False)
-        await msg.answer(f"🛑 Disabled {n} subscription(s).")
-
-    @dp.message(Command("resume"))
-    async def cmd_resume(msg: Message) -> None:
-        n = set_subscription_enabled(engine, int(msg.chat.id), enabled=True)
-        await msg.answer(f"▶️ Enabled {n} subscription(s).")
+        await msg.answer(f"✅ Linked + active.\nSubscriptions in this chat: {len(rows)}\n\nUse /queries")
 
     @dp.message(Command("status"))
     async def cmd_status(msg: Message) -> None:
-        rows = list_subscriptions_for_chat(engine, int(msg.chat.id), platform=PLATFORM_UPWORK)
-        enabled = sum(1 for r in rows if r["enabled"])
-        await msg.answer(f"Subscriptions: {len(rows)} total, {enabled} enabled.\n\nUse /list to view.")
+        portal_user_id = await gate_or_prompt(msg)
+        if not portal_user_id:
+            return
 
-    # Convenience: if they just type text, treat it like /add
+        rows = list_subscriptions_for_chat(engine, int(msg.chat.id), platform=PLATFORM_UPWORK)
+        await msg.answer(f"✅ Active.\nSubscriptions in this chat: {len(rows)}")
+
+    @dp.message(Command("queries"))
+    async def cmd_queries(msg: Message) -> None:
+        portal_user_id = await gate_or_prompt(msg)
+        if not portal_user_id:
+            return
+
+        rows = list_subscriptions_for_chat(engine, int(msg.chat.id), platform=PLATFORM_UPWORK)
+        if not rows:
+            await msg.answer("No queries yet. Use /query <expression>.")
+            return
+
+        lines = ["📌 Queries for this chat:"]
+        for r in rows:
+            status = "✅" if r['sub_enabled'] else "⏸️"
+            lines.append(
+                f"{status} #{r['subscription_id']} | "
+                f"poll={r['poll_seconds']}s | top={r['top_n']}\n"
+                f"   {r.get('raw_text') or r.get('compiled_query')!r}"
+            )
+        await msg.answer("\n".join(lines))
+
+    @dp.message(Command("query"))
+    async def cmd_query(msg: Message) -> None:
+        portal_user_id = await gate_or_prompt(msg)
+        if not portal_user_id:
+            return
+
+        parts = (msg.text or "").split(maxsplit=1)
+        if len(parts) < 2 or not parts[1].strip():
+            await msg.answer("Usage: /query <expression>\nExample: /query python AND scraping")
+            return
+
+        raw_text = parts[1].strip()
+        compiled = _compile_query(raw_text)
+
+        query_id = create_or_get_query_for_user(
+            engine,
+            portal_user_id=portal_user_id,
+            platform=PLATFORM_UPWORK,
+            raw_text=raw_text,
+            compiled_query=compiled,
+            poll_seconds=DEFAULT_POLL_SECONDS,
+            top_n=DEFAULT_TOP_N,
+            quote_terms=False,
+        )
+        sub_id = subscribe_chat_to_query(engine, int(msg.chat.id), query_id)
+
+        await msg.answer(
+            f"✅ Query #{sub_id} created!\n"
+            f"Search: {raw_text}\n\n"
+            "The scheduler will start monitoring for new jobs."
+        )
+
+    @dp.message(Command("remove"))
+    async def cmd_remove(msg: Message) -> None:
+        portal_user_id = await gate_or_prompt(msg)
+        if not portal_user_id:
+            return
+
+        parts = (msg.text or "").split(maxsplit=1)
+        if len(parts) < 2 or not parts[1].strip():
+            await msg.answer("Usage: /remove <sub_id>\nExample: /remove 123")
+            return
+
+        try:
+            sub_id = int(parts[1].strip())
+        except ValueError:
+            await msg.answer("⚠️ Invalid subscription ID. Must be a number.")
+            return
+
+        removed = remove_subscription(engine, int(msg.chat.id), sub_id)
+        if removed:
+            await msg.answer(f"✅ Subscription #{sub_id} removed.")
+        else:
+            await msg.answer(f"⚠️ Subscription #{sub_id} not found in this chat.")
+
+    @dp.message(Command("pause"))
+    async def cmd_pause(msg: Message) -> None:
+        portal_user_id = await gate_or_prompt(msg)
+        if not portal_user_id:
+            return
+
+        count = set_subscription_enabled(engine, int(msg.chat.id), enabled=False)
+        if count > 0:
+            await msg.answer(f"⏸️ Paused {count} subscription(s) in this chat.")
+        else:
+            await msg.answer("No subscriptions to pause.")
+
+    @dp.message(Command("resume"))
+    async def cmd_resume(msg: Message) -> None:
+        portal_user_id = await gate_or_prompt(msg)
+        if not portal_user_id:
+            return
+
+        count = set_subscription_enabled(engine, int(msg.chat.id), enabled=True)
+        if count > 0:
+            await msg.answer(f"▶️ Resumed {count} subscription(s) in this chat.")
+        else:
+            await msg.answer("No subscriptions to resume.")
+
+    @dp.message(Command("help"))
+    async def cmd_help(msg: Message) -> None:
+        await msg.answer(HELP)
+
+    # Fallback: plain text becomes a query
     @dp.message(F.text)
     async def fallback_text(msg: Message) -> None:
-        text_in = (msg.text or "").strip()
-        if not text_in or text_in.startswith("/"):
+        txt = (msg.text or "").strip()
+        if not txt or txt.startswith("/"):
             return
-        msg.text = f"/add {text_in}"
-        await cmd_add(msg)
+        msg.text = f"/query {txt}"
+        await cmd_query(msg)
 
     print("[bot] running. Ctrl+C to stop.")
     await dp.start_polling(bot)
@@ -178,3 +295,4 @@ async def main() -> None:
 
 if __name__ == "__main__":
     asyncio.run(main())
+

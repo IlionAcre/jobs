@@ -89,6 +89,31 @@ class SeleniumConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class CamufouxConfig:
+    active: bool = False
+    browser_name: Optional[str] = None
+    # Selenium overrides
+    headed: Optional[bool] = None
+    incognito: Optional[bool] = None
+    uc_mode: Optional[bool] = None
+    start_maximized: Optional[bool] = None
+    # Waits overrides
+    wait_after_open_s: Optional[float] = None
+    wait_for_job_tiles: Optional[bool] = None
+    job_tile_css: Optional[str] = None
+    wait_timeout_s: Optional[float] = None
+    pause_for_manual_solve: Optional[bool] = None
+    post_enter_wait_s: Optional[float] = None
+    # Stealth options
+    humanize_cursor: Optional[bool] = None
+    geoip: Optional[bool] = None
+    window_size: Optional[list[int]] = None
+    fonts: Optional[list[str]] = None
+    addons: Optional[list[str]] = None
+    exclude_switches: Optional[list[str]] = None
+
+
+@dataclass(frozen=True, slots=True)
 class WaitsConfig:
     wait_after_open_s: float = 2.0
     wait_for_job_tiles: bool = True
@@ -103,6 +128,7 @@ class AppConfig:
     upwork: UpworkConfig
     selenium: SeleniumConfig
     waits: WaitsConfig
+    camufoux: Optional[CamufouxConfig] = None
 
 
 # ============================================================
@@ -158,6 +184,17 @@ def _as_str(x: Any, default: str, where: str) -> str:
     return str(x)
 
 
+def _as_list(x: Any, default: Optional[list], where: str) -> Optional[list]:
+    if x is None:
+        return default
+    if isinstance(x, list):
+        return x
+    if isinstance(x, str):
+        # Allow comma-separated strings
+        return [s.strip() for s in x.split(",") if s.strip()]
+    raise ValueError(f"Expected list at '{where}', got {type(x).__name__}")
+
+
 def load_config(path: Optional[Path] = None) -> AppConfig:
     """
     Load YAML config into strongly-typed AppConfig.
@@ -206,6 +243,33 @@ def load_config(path: Optional[Path] = None) -> AppConfig:
         ),
     )
 
+    # ---- camufoux (optional) ----
+    camufoux_raw = root.get("camufoux")
+    camufoux: Optional[CamufouxConfig] = None
+    if camufoux_raw is not None:
+        c_raw = _require_dict(camufoux_raw, "camufoux")
+        camufoux = CamufouxConfig(
+            active=_as_bool(c_raw.get("active"), False, "camufoux.active"),
+            browser_name=_as_str(c_raw.get("browser_name"), "", "camufoux.browser_name") or None,
+            headed=_as_bool(c_raw.get("headed"), None, "camufoux.headed"),
+            incognito=_as_bool(c_raw.get("incognito"), None, "camufoux.incognito"),
+            uc_mode=_as_bool(c_raw.get("uc_mode"), None, "camufoux.uc_mode"),
+            start_maximized=_as_bool(c_raw.get("start_maximized"), None, "camufoux.start_maximized"),
+            wait_after_open_s=_as_float(c_raw.get("wait_after_open_s"), None, "camufoux.wait_after_open_s"),
+            wait_for_job_tiles=_as_bool(c_raw.get("wait_for_job_tiles"), None, "camufoux.wait_for_job_tiles"),
+            job_tile_css=_as_str(c_raw.get("job_tile_css"), None, "camufoux.job_tile_css"),
+            wait_timeout_s=_as_float(c_raw.get("wait_timeout_s"), None, "camufoux.wait_timeout_s"),
+            pause_for_manual_solve=_as_bool(c_raw.get("pause_for_manual_solve"), None, "camufoux.pause_for_manual_solve"),
+            post_enter_wait_s=_as_float(c_raw.get("post_enter_wait_s"), None, "camufoux.post_enter_wait_s"),
+            # Stealth options
+            humanize_cursor=_as_bool(c_raw.get("humanize_cursor"), None, "camufoux.humanize_cursor"),
+            geoip=_as_bool(c_raw.get("geoip"), None, "camufoux.geoip"),
+            window_size=_as_list(c_raw.get("window_size"), None, "camufoux.window_size"),
+            fonts=_as_list(c_raw.get("fonts"), None, "camufoux.fonts"),
+            addons=_as_list(c_raw.get("addons"), None, "camufoux.addons"),
+            exclude_switches=_as_list(c_raw.get("exclude_switches"), None, "camufoux.exclude_switches"),
+        )
+
     # ---- waits ----
     waits_raw = _require_dict(root.get("waits", {}), "waits")
     waits = WaitsConfig(
@@ -241,4 +305,17 @@ def load_config(path: Optional[Path] = None) -> AppConfig:
         ),
     )
 
-    return AppConfig(upwork=upwork, selenium=selenium, waits=waits)
+    return AppConfig(upwork=upwork, selenium=selenium, waits=waits, camufoux=camufoux)
+
+
+__all__ = [
+    "JobTile",
+    "AppConfig",
+    "UpworkConfig",
+    "SeleniumConfig",
+    "CamufouxConfig",
+    "WaitsConfig",
+    "load_config",
+    "clean_text",
+]
+

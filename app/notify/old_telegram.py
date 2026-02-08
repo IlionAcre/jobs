@@ -23,8 +23,8 @@ from aiogram.exceptions import (
 # CONFIG
 # =========================
 
-BASE_DIR: Path = Path(__file__).resolve().parent
-ENV_PATH: Path = BASE_DIR / ".env"
+PROJECT_ROOT: Path = Path(__file__).resolve().parents[2]
+ENV_PATH: Path = PROJECT_ROOT / ".env"
 
 # Set a default test message for manual runs (you can change this)
 DEFAULT_TEST_MESSAGE: str = "✅ Telegram notifier is working."

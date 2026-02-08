@@ -15,3 +15,28 @@ waits:
   wait_timeout_s: 30.0
   pause_for_manual_solve: true
   post_enter_wait_s: 1.0
+
+camufoux:
+  active: true
+  # Selenium overrides (mapped to Camoufox)
+  headed: false
+  incognito: true
+  uc_mode: true
+  # start_maximized: true
+  start_maximized: true
+  
+  # Stealth / Fingerprint Options
+  humanize_cursor: true
+  geoip: true
+  # window_size: [1920, 1080]
+  # fonts: ["Arial", "Roboto"]
+  # addons: ["/path/to/addon.xpi"]
+  # exclude_switches: ["--enable-automation"]
+
+  # Waits overrides
+  wait_after_open_s: 2.0
+  wait_for_job_tiles: true
+  job_tile_css: 'article[data-test="JobTile"]'
+  wait_timeout_s: 30.0
+  pause_for_manual_solve: true
+  post_enter_wait_s: 1.0
