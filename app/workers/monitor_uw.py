@@ -8,6 +8,7 @@ from typing import Dict, List, Optional, Tuple
 from dotenv import load_dotenv
 from sqlalchemy import Engine, text
 
+from app.config import load_config
 from app.ingest.upwork import build_search_url
 from app.notify.telegram import TelegramNotifier
 from app.parse.upwork import parse_jobs
@@ -15,28 +16,21 @@ from app.queue.redis_streams import (
     ensure_consumer_group,
     get_redis_client,
     xack,
+    xadd_work,
     xautoclaim,
     xreadgroup,
 )
+from app.settings import load_worker_settings
 from app.shared.browser import FetchOptions, sb_session
-from app.shared.models import load_config
+from app.shared.health import check_db, check_redis, require_env
+from app.shared.logging_utils import configure_logging, get_logger
 from app.store.core import CORE_SCHEMA, PLATFORM_UPWORK, ensure_core_schema_and_tables, mark_subscription_primed, try_mark_delivered
 from app.store.db import build_db_dsn_from_env, make_engine
 from app.store.jobs import ensure_schema, upsert_job
 
 
-# -------- Redis stream config
-STREAM = os.environ.get("UPWORK_STREAM", "work:upwork")
-GROUP = os.environ.get("UPWORK_GROUP", "workers:upwork")
-CONSUMER = os.environ.get("UPWORK_CONSUMER", "worker-1")
-
-# -------- Behavior
 CONFIG_PATH: Path = Path(__file__).resolve().parents[1] / "config" / "config.yaml"
 CHALLENGE_TIMEOUT_S = 180
-
-AUTOCLAIM_IDLE_MS = 60_000  # reclaim pending after 60s idle
-READ_COUNT = 10
-BLOCK_MS = 5000
 
 
 def _job_key(j: object) -> str:
@@ -100,9 +94,6 @@ def _load_query(engine: Engine, query_id: int) -> Optional[Dict[str, object]]:
 
 
 def _subscription_targets_for_query(engine: Engine, query_id: int) -> List[Tuple[int, int, Optional[str]]]:
-    """
-    Returns list of (subscription_id, chat_id, primed_at) for enabled subscriptions.
-    """
     sql = f"""
     SELECT subscription_id, chat_id, primed_at
     FROM "{CORE_SCHEMA}".subscriptions
@@ -120,28 +111,38 @@ def _is_active(status: str, valid_until) -> bool:
     if valid_until is None:
         return True
     try:
-        # valid_until is datetime
         from datetime import datetime, timezone
         return valid_until > datetime.now(timezone.utc)
     except Exception:
         return True
 
 
+def _attempt_from_fields(fields: Dict[str, str]) -> int:
+    try:
+        return int(fields.get("attempt", "0"))
+    except Exception:
+        return 0
+
+
 def main() -> None:
     load_dotenv()
+    configure_logging()
+    log = get_logger("worker")
+
+    require_env(["DB_NAME", "DB_USER", "DB_PASSWORD", "TELEGRAM_BOT_TOKEN"])
+    settings = load_worker_settings()
 
     tg_token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
-    if not tg_token:
-        raise RuntimeError("Missing TELEGRAM_BOT_TOKEN in .env")
-
     cfg = load_config(CONFIG_PATH)
 
     engine = make_engine(build_db_dsn_from_env())
     ensure_core_schema_and_tables(engine)
     ensure_schema(engine, schema="upwork")
+    check_db(engine)
 
     r = get_redis_client()
-    ensure_consumer_group(r, stream=STREAM, group=GROUP)
+    check_redis(r)
+    ensure_consumer_group(r, stream=settings.stream, group=settings.group)
 
     notifier = TelegramNotifier(token=tg_token)
 
@@ -153,42 +154,45 @@ def main() -> None:
         post_enter_wait_s=cfg.waits.post_enter_wait_s,
     )
 
-    print(f"[worker] stream={STREAM} group={GROUP} consumer={CONSUMER}")
+    log.info(
+        "worker_ready",
+        extra={
+            "stream": settings.stream,
+            "group": settings.group,
+            "consumer": settings.consumer,
+            "dlq_stream": settings.dlq_stream,
+            "max_attempts": settings.max_attempts,
+        },
+    )
 
-    # For autoclaim scanning
     autoclaim_start = "0-0"
 
     try:
         with sb_session(cfg.selenium) as sb:
             while True:
                 try:
-                    # 1) Reclaim stale pending (optional but good long-term)
                     try:
                         autoclaim_start, reclaimed = xautoclaim(
                             r,
-                            stream=STREAM,
-                            group=GROUP,
-                            consumer=CONSUMER,
-                            min_idle_ms=AUTOCLAIM_IDLE_MS,
-                            count=READ_COUNT,
+                            stream=settings.stream,
+                            group=settings.group,
+                            consumer=settings.consumer,
+                            min_idle_ms=settings.autoclaim_idle_ms,
+                            count=settings.read_count,
                             start_id=autoclaim_start,
                         )
-                        if reclaimed:
-                            msgs = [(mid, fields) for (mid, fields) in reclaimed]
-                        else:
-                            msgs = []
+                        msgs = [(mid, fields) for (mid, fields) in reclaimed] if reclaimed else []
                     except Exception:
                         msgs = []
 
-                    # 2) Read new messages
                     if not msgs:
                         items = xreadgroup(
                             r,
-                            stream=STREAM,
-                            group=GROUP,
-                            consumer=CONSUMER,
-                            count=READ_COUNT,
-                            block_ms=BLOCK_MS,
+                            stream=settings.stream,
+                            group=settings.group,
+                            consumer=settings.consumer,
+                            count=settings.read_count,
+                            block_ms=settings.block_ms,
                         )
                         msgs = []
                         for _stream, entries in items:
@@ -199,46 +203,45 @@ def main() -> None:
                         continue
 
                     for msg_id, fields in msgs:
+                        if not isinstance(fields, dict):
+                            xack(r, stream=settings.stream, group=settings.group, msg_id=msg_id)
+                            continue
+
+                        query_id: Optional[int] = None
+                        attempt = _attempt_from_fields(fields)
+
                         try:
-                            qid_s = fields.get("query_id") if isinstance(fields, dict) else None
+                            qid_s = fields.get("query_id")
                             if not qid_s:
-                                xack(r, stream=STREAM, group=GROUP, msg_id=msg_id)
+                                xack(r, stream=settings.stream, group=settings.group, msg_id=msg_id)
                                 continue
 
                             query_id = int(qid_s)
                             q = _load_query(engine, query_id)
                             if not q:
-                                print(f"[worker] query_id={query_id} not found; ack")
-                                xack(r, stream=STREAM, group=GROUP, msg_id=msg_id)
+                                log.info("worker_query_missing", extra={"query_id": query_id, "msg_id": msg_id})
+                                xack(r, stream=settings.stream, group=settings.group, msg_id=msg_id)
                                 continue
 
-                            if str(q["platform"]) != PLATFORM_UPWORK:
-                                xack(r, stream=STREAM, group=GROUP, msg_id=msg_id)
-                                continue
-
-                            if not bool(q["enabled"]):
-                                xack(r, stream=STREAM, group=GROUP, msg_id=msg_id)
+                            if str(q["platform"]) != PLATFORM_UPWORK or not bool(q["enabled"]):
+                                xack(r, stream=settings.stream, group=settings.group, msg_id=msg_id)
                                 continue
 
                             if not _is_active(str(q["status"]), q["valid_until"]):
-                                # subscription inactive; ack so it doesn't clog pending
-                                xack(r, stream=STREAM, group=GROUP, msg_id=msg_id)
+                                xack(r, stream=settings.stream, group=settings.group, msg_id=msg_id)
                                 continue
 
                             compiled_query = str(q["compiled_query"] or "").strip()
                             if not compiled_query:
-                                xack(r, stream=STREAM, group=GROUP, msg_id=msg_id)
+                                xack(r, stream=settings.stream, group=settings.group, msg_id=msg_id)
                                 continue
 
                             top_n = int(q["top_n"])
                             url = build_search_url(cfg.upwork.base_search_url, compiled_query)
 
-                            # Fetch
                             sb.open(url)
-
                             if cfg.waits.wait_for_job_tiles:
                                 sb.wait_for_element_present(cfg.waits.job_tile_css, timeout=CHALLENGE_TIMEOUT_S)
-
                             if opts.wait_after_open_s and opts.wait_after_open_s > 0:
                                 sb.sleep(opts.wait_after_open_s)
                             if opts.wait_for_css:
@@ -247,19 +250,16 @@ def main() -> None:
                             html_text = sb.get_page_source()
                             jobs = parse_jobs(html_text)[:top_n]
 
-                            # Upsert jobs into your existing upwork.jobs
                             for j in jobs:
                                 upsert_job(engine, schema="upwork", source="upwork", job=j)
 
                             targets = _subscription_targets_for_query(engine, query_id)
                             if not targets:
-                                xack(r, stream=STREAM, group=GROUP, msg_id=msg_id)
+                                xack(r, stream=settings.stream, group=settings.group, msg_id=msg_id)
                                 continue
 
-                            # Deliver per subscription
                             for sub_id, chat_id, primed_at in targets:
                                 if primed_at is None:
-                                    # prime silently
                                     for j in jobs:
                                         try_mark_delivered(engine, sub_id, _job_key(j))
                                     mark_subscription_primed(engine, sub_id)
@@ -276,20 +276,74 @@ def main() -> None:
                                     for chunk in _chunk_text(header + body):
                                         notifier.send(chat_id, chunk)
 
-                            # ACK only after successful processing
-                            xack(r, stream=STREAM, group=GROUP, msg_id=msg_id)
+                            xack(r, stream=settings.stream, group=settings.group, msg_id=msg_id)
+                            log.info(
+                                "worker_msg_processed",
+                                extra={
+                                    "msg_id": msg_id,
+                                    "query_id": query_id,
+                                    "attempt": attempt,
+                                    "targets": len(targets),
+                                    "jobs": len(jobs),
+                                },
+                            )
 
                         except Exception as e:
-                            # Do NOT ack. It stays pending and can be reclaimed.
-                            print(f"[worker] msg_id={msg_id} error: {e!r}")
-                            continue
+                            next_attempt = attempt + 1
+                            error_text = repr(e)
+                            safe_query_id = query_id if query_id is not None else 0
+
+                            if safe_query_id == 0 or next_attempt >= settings.max_attempts:
+                                xadd_work(
+                                    r,
+                                    stream=settings.dlq_stream,
+                                    fields={
+                                        "query_id": str(safe_query_id),
+                                        "source_msg_id": str(msg_id),
+                                        "attempt": str(next_attempt),
+                                        "error": error_text[:500],
+                                        "consumer": settings.consumer,
+                                    },
+                                )
+                                xack(r, stream=settings.stream, group=settings.group, msg_id=msg_id)
+                                log.error(
+                                    "worker_msg_dlq",
+                                    extra={
+                                        "msg_id": msg_id,
+                                        "query_id": safe_query_id,
+                                        "attempt": next_attempt,
+                                        "max_attempts": settings.max_attempts,
+                                        "dlq_stream": settings.dlq_stream,
+                                        "error": error_text,
+                                    },
+                                )
+                            else:
+                                xadd_work(
+                                    r,
+                                    stream=settings.stream,
+                                    fields={
+                                        "query_id": str(safe_query_id),
+                                        "attempt": str(next_attempt),
+                                    },
+                                )
+                                xack(r, stream=settings.stream, group=settings.group, msg_id=msg_id)
+                                log.warning(
+                                    "worker_msg_requeued",
+                                    extra={
+                                        "msg_id": msg_id,
+                                        "query_id": safe_query_id,
+                                        "attempt": next_attempt,
+                                        "max_attempts": settings.max_attempts,
+                                        "error": error_text,
+                                    },
+                                )
 
                 except KeyboardInterrupt:
-                    print("\n[worker] stopped.")
+                    log.info("worker_stopped")
                     return
 
-                except Exception as e:
-                    print(f"[worker] loop error: {e!r}")
+                except Exception:
+                    log.exception("worker_loop_error")
                     time.sleep(2)
 
     finally:

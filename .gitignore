@@ -9,4 +9,38 @@ wheels/
 # Virtual environments
 .venv
 .env
+.env.*
 downloaded_files/
+
+# Logs
+*.log
+*.log.*
+*.log.err
+logs/
+
+# PowerShell and local runner scripts
+*.ps1
+
+# Local scratch and research files
+research/
+WHAT_YOU_STILL_NEED_TO_DO.txt
+
+# Local debug captures
+*.html
+debug_*.png
+debug_captcha_view.png
+
+# Node & Frontend build artifacts
+node_modules/
+.next/
+.turbo/
+out/
+coverage/
+*.tsbuildinfo
+next-env.d.ts
+
+# OS & Editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

@@ -27,7 +27,7 @@ from app.parse.upwork import parse_jobs
 # MODIFIED IMPORT for browser_cm (Playwright/Camoufox)
 from app.shared.browser_cm import FetchOptions, camoufox_session
 from app.shared.captcha_handle_cm import solve_captcha
-from app.shared.models import load_config
+from app.config import load_config
 from app.store.jobs import ensure_schema, make_engine, upsert_job
 
 # =========================
@@ -112,9 +112,10 @@ def _print_new_jobs(jobs: List[object]) -> None:
         duration = getattr(j, "duration", None) or ""
         location = getattr(j, "location", None) or ""
         job_type = getattr(j, "job_type", None) or ""
+        posted = getattr(j, "posted", None) or ""
         tags = getattr(j, "tags", None) or []
 
-        meta_bits = [b for b in [job_type, location, budget, duration] if b]
+        meta_bits = [b for b in [job_type, location, budget, duration, posted] if b]
         meta = " | ".join(meta_bits)
 
         print(f"- {title}" + (f" | {meta}" if meta else ""))
@@ -143,19 +144,25 @@ def _get_telegram_config_from_env() -> Optional[Tuple[str, int]]:
     return token, chat_id
 
 
-def _format_job_lines(j: object) -> List[str]:
+def _format_job_lines(j: object, include_description: bool = True) -> List[str]:
     title = getattr(j, "title", None) or "(no title)"
     url = getattr(j, "url", None) or ""
     budget = getattr(j, "budget", None) or ""
     duration = getattr(j, "duration", None) or ""
     location = getattr(j, "location", None) or ""
     job_type = getattr(j, "job_type", None) or ""
+    posted = getattr(j, "posted", None) or ""
     tags = getattr(j, "tags", None) or []
+    snippet = getattr(j, "snippet", None) or ""
 
-    meta_bits = [b for b in [job_type, location, budget, duration] if b]
+    meta_bits = [b for b in [job_type, location, budget, duration, posted] if b]
     meta = " | ".join(meta_bits)
 
     lines = [f"• {title}" + (f" — {meta}" if meta else "")]
+    if include_description and snippet:
+        # Truncate if very long? Telegram limit is per-message, but let's keep it sane
+        lines.append(f"  {snippet[:300]}..." if len(snippet) > 300 else f"  {snippet}")
+
     if url:
         lines.append(url)
     if tags:
@@ -274,14 +281,14 @@ class TelegramNotifier:
                 await asyncio.sleep(base_delay * (2 ** (attempt - 1)) + random.random())
 
 
-def _notify_new_jobs(notifier: TelegramNotifier, jobs: List[object]) -> None:
+def _notify_new_jobs(notifier: TelegramNotifier, jobs: List[object], show_description: bool = True) -> None:
     if not jobs:
         return
 
     header = [f"🔔 {len(jobs)} new Upwork job(s)"]
     body_lines: List[str] = []
     for j in jobs:
-        body_lines.extend(_format_job_lines(j))
+        body_lines.extend(_format_job_lines(j, include_description=show_description))
         body_lines.append("")
 
     chunks = _chunk_text(header + [""] + body_lines, max_chars=3500)
@@ -400,7 +407,11 @@ def main() -> None:
                     print()
 
                     if notifier is not None and new_jobs:
-                        _notify_new_jobs(notifier, new_jobs)
+                        _notify_new_jobs(
+                            notifier,
+                            new_jobs,
+                            show_description=cfg.upwork.show_description
+                        )
 
                 except KeyboardInterrupt:
                     print("\n[monitor] stopped.")

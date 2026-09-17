@@ -5,7 +5,7 @@ from typing import Sequence
 from urllib.parse import quote_plus
 
 from app.shared.browser import fetch_html_with_waits, sb_session
-from app.shared.models import AppConfig
+from app.config import AppConfig
 
 # Upwork-specific base
 BASE_URL = "https://www.upwork.com"
@@ -31,8 +31,9 @@ def build_search_url(base_search_url: str, query: str) -> str:
     """
     Build the Upwork search URL for the given query.
     """
+    from urllib.parse import quote
     # Upwork uses q= in /nx/search/jobs/
-    return f"{base_search_url}?q={quote_plus(query)}"
+    return f"{base_search_url}?nav_dir=pop&q={quote(query)}&sort=recency"
 
 
 def fetch_upwork_search_html(cfg: AppConfig, terms: Sequence[str]) -> str:

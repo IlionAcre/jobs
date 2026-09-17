@@ -141,7 +141,9 @@ def parse_jobs(html_text: str, *, base_url: str = BASE_URL) -> List[JobTile]:
         job_uid = art.get("data-ev-job-uid") or art.get("data-test-key")
 
         # Posted: "Posted 33 seconds ago"
-        posted_parts = art.xpath('.//small[@data-test="job-pubilshed-date"]//span/text()')
+        posted_parts = art.xpath('.//small[@data-test="job-published-date"]//span/text()')
+        if not posted_parts:
+            posted_parts = art.xpath('.//small[@data-test="job-pubilshed-date"]//span/text()')
         posted = clean_text(" ".join(posted_parts)) if posted_parts else None
 
         # Title + URL

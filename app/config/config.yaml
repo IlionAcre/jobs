@@ -1,6 +1,7 @@
 upwork:
   base_search_url: "https://www.upwork.com/nx/search/jobs/"
   quote_terms: false
+  show_description: true
 
 selenium:
   headed: true
@@ -19,12 +20,12 @@ waits:
 camufoux:
   active: true
   # Selenium overrides (mapped to Camoufox)
-  headed: false
+  headed: true
   incognito: true
   uc_mode: true
   # start_maximized: true
   start_maximized: true
-  
+
   # Stealth / Fingerprint Options
   humanize_cursor: true
   geoip: true

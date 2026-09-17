@@ -6,13 +6,13 @@ from dataclasses import dataclass
 from typing import Optional, TYPE_CHECKING, Generator
 
 # Playwright & Camoufox
-from playwright.sync_api import Page, BrowserContext
+from playwright.sync_api import Page
 from camoufox.sync_api import Camoufox
 
 from contextlib import contextmanager
 
 if TYPE_CHECKING:
-    from app.shared.models import SeleniumConfig, WaitsConfig, CamufouxConfig
+    from app.config import SeleniumConfig, WaitsConfig, CamufouxConfig
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,19 +30,17 @@ def camoufox_session(cfg: "SeleniumConfig", camufoux_cfg: Optional["CamufouxConf
     Create a Camoufox session (Playwright), utilizing config.
     Yields a Playwright Page object.
     """
-    # Default options
-    headless = not cfg.headed
-    
     # Camoufox/Playwright options
     cf_kwargs = {
-        "geoip": True, 
+        "headless": (not cfg.headed),
+        "geoip": True,
     }
 
     # Apply Camufoux overrides
     if camufoux_cfg and camufoux_cfg.active:
         logging.info("Using Camoufox configuration")
         if camufoux_cfg.headed is not None:
-            cf_kwargs["headless"] = not camufoux_cfg.headed
+            cf_kwargs["headless"] = (not camufoux_cfg.headed)
         
         # New stealth options
         if camufoux_cfg.humanize_cursor is not None:

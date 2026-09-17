@@ -7,7 +7,7 @@ from typing import Optional, TYPE_CHECKING
 from seleniumbase import SB
 
 if TYPE_CHECKING:
-    from app.shared.models import SeleniumConfig, WaitsConfig
+    from app.config import SeleniumConfig, WaitsConfig
 
 
 @dataclass(frozen=True, slots=True)

@@ -17,6 +17,7 @@ class UpworkConfig(BaseModel):
 
     base_search_url: str = Field(default="https://www.upwork.com/nx/search/jobs/")
     quote_terms: bool = Field(default=False)
+    show_description: bool = Field(default=True)
 
 
 class SeleniumConfig(BaseModel):
@@ -39,12 +40,36 @@ class WaitsConfig(BaseModel):
     post_enter_wait_s: float = 1.0
 
 
+class CamufouxConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    active: bool = False
+    browser_name: Optional[str] = None
+    headed: Optional[bool] = None
+    incognito: Optional[bool] = None
+    uc_mode: Optional[bool] = None
+    start_maximized: Optional[bool] = None
+    wait_after_open_s: Optional[float] = None
+    wait_for_job_tiles: Optional[bool] = None
+    job_tile_css: Optional[str] = None
+    wait_timeout_s: Optional[float] = None
+    pause_for_manual_solve: Optional[bool] = None
+    post_enter_wait_s: Optional[float] = None
+    humanize_cursor: Optional[bool] = None
+    geoip: Optional[bool] = None
+    window_size: Optional[list[int]] = None
+    fonts: Optional[list[str]] = None
+    addons: Optional[list[str]] = None
+    exclude_switches: Optional[list[str]] = None
+
+
 class AppConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     upwork: UpworkConfig = Field(default_factory=UpworkConfig)
     selenium: SeleniumConfig = Field(default_factory=SeleniumConfig)
     waits: WaitsConfig = Field(default_factory=WaitsConfig)
+    camufoux: Optional[CamufouxConfig] = None
 
 
 # -------------------------
@@ -81,7 +106,8 @@ def load_config(path: str | Path | None = None, *, cache: bool = True) -> AppCon
     if not path.exists():
         raise FileNotFoundError(f"Config file not found: {path.resolve()}")
 
-    raw: Dict[str, Any] = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    loaded: Dict[str, Any] = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    raw = loaded.get("root", loaded) if isinstance(loaded, dict) else {}
     cfg = AppConfig.model_validate(raw)
 
     if cache:
@@ -94,5 +120,6 @@ __all__ = [
     "UpworkConfig",
     "SeleniumConfig",
     "WaitsConfig",
+    "CamufouxConfig",
     "load_config",
 ]

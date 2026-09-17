@@ -11,6 +11,9 @@ from aiogram.filters import Command
 from aiogram.types import Message
 from dotenv import load_dotenv
 
+from app.settings import load_bot_settings
+from app.shared.health import check_db, require_env
+from app.shared.logging_utils import configure_logging, get_logger
 from app.store.core import (
     PLATFORM_UPWORK,
     create_auth_link,
@@ -30,8 +33,6 @@ from app.store.db import build_db_dsn_from_env, make_pg_engine
 
 DEFAULT_POLL_SECONDS = 60
 DEFAULT_TOP_N = 25
-
-PORTAL_BASE_URL = os.environ.get("PORTAL_BASE_URL", "https://example.com").rstrip("/")
 
 HELP = (
     "Commands:\n"
@@ -81,13 +82,17 @@ def _compile_query(raw: str) -> str:
 
 async def main() -> None:
     load_dotenv()
+    configure_logging()
+    log = get_logger("bot")
+
+    require_env(["DB_NAME", "DB_USER", "DB_PASSWORD", "TELEGRAM_BOT_TOKEN"])
+    settings = load_bot_settings()
 
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
-    if not token:
-        raise RuntimeError("Missing TELEGRAM_BOT_TOKEN in .env")
 
     engine = make_pg_engine(build_db_dsn_from_env())
     ensure_core_schema_and_tables(engine)
+    check_db(engine)
 
     bot = Bot(token=token)
     dp = Dispatcher()
@@ -126,7 +131,7 @@ async def main() -> None:
                 expires_at=expires_at,
             )
 
-            link_url = f"{PORTAL_BASE_URL}/link?token={link_token}"
+            link_url = f"{settings.portal_base_url}/link?token={link_token}"
             await msg.answer(
                 "🔐 You’re not linked yet.\n"
                 "Login/link your Telegram here:\n"
@@ -137,7 +142,7 @@ async def main() -> None:
 
         # Linked but subscription inactive
         if not is_subscription_active(engine, portal_user_id):
-            subscribe_url = f"{PORTAL_BASE_URL}/subscribe"
+            subscribe_url = f"{settings.portal_base_url}/subscribe"
             await msg.answer(
                 "💳 Your subscription is not active.\n"
                 "Subscribe here:\n"
@@ -289,7 +294,7 @@ async def main() -> None:
         msg.text = f"/query {txt}"
         await cmd_query(msg)
 
-    print("[bot] running. Ctrl+C to stop.")
+    log.info("bot_ready")
     await dp.start_polling(bot)
 
 
