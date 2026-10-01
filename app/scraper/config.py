@@ -1,0 +1,147 @@
+"""
+Typed, validated settings for the scraper pipeline (app/config/scraper.yaml).
+
+Resolution order for the file: explicit path -> env SCRAPER_CONFIG_PATH -> app/config/scraper.yaml.
+Unknown keys and dangling references (a minter naming a transport that doesn't exist) fail at load time.
+"""
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from typing import Dict, List, Literal, Optional
+
+import yaml
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+
+from app.scraper.errors import ConfigError
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_PATH = REPO_ROOT / "app" / "config" / "scraper.yaml"
+ENV_PATH_KEY = "SCRAPER_CONFIG_PATH"
+
+
+class _Model(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class UpworkConfig(_Model):
+    search_page_url: str
+    api_url: str
+    token_cookie: str
+    job_url_template: str
+
+
+class TransportConfig(_Model):
+    kind: Literal["curl_cffi", "httpcloak", "requests_h1"]
+    impersonate: Optional[str] = None  # curl_cffi browser profile, e.g. "chrome150"
+    preset: Optional[str] = None  # httpcloak preset, e.g. "chrome-latest"
+    timeout_s: float = 30.0
+    proxy: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _required_per_kind(self) -> "TransportConfig":
+        if self.kind == "curl_cffi" and not self.impersonate:
+            raise ValueError("curl_cffi transport needs `impersonate`")
+        if self.kind == "httpcloak" and not self.preset:
+            raise ValueError("httpcloak transport needs `preset`")
+        return self
+
+
+class PollerConfig(_Model):
+    transport: str
+    fallback_transport: Optional[str] = None  # used if the API challenges the primary client
+    interval_s: float = Field(gt=0)
+    jitter: float = Field(ge=0, lt=1)
+    ids_count: int = Field(ge=1, le=50)  # the API caps a page at 50
+    details_count: int = Field(ge=1, le=50)
+    max_job_age_minutes: float = Field(gt=0)
+
+
+class TokensConfig(_Model):
+    refresh_after_hours: float = Field(gt=0)
+    max_age_hours: float = Field(gt=0)
+
+    @model_validator(mode="after")
+    def _refresh_before_max(self) -> "TokensConfig":
+        if self.refresh_after_hours >= self.max_age_hours:
+            raise ValueError("refresh_after_hours must be smaller than max_age_hours")
+        return self
+
+
+class MinterConfig(_Model):
+    name: str
+    kind: Literal["http", "subprocess"]
+    transport: Optional[str] = None  # kind=http
+    python: Optional[str] = None  # kind=subprocess: venv dir or interpreter, relative to the repo root
+    script: Optional[str] = None  # kind=subprocess
+    args: List[str] = Field(default_factory=list)
+    timeout_s: float = 60.0
+    attempts: int = Field(default=1, ge=1)
+    min_free_mem_mb: Optional[int] = None
+
+    @model_validator(mode="after")
+    def _required_per_kind(self) -> "MinterConfig":
+        if self.kind == "http" and not self.transport:
+            raise ValueError(f"minter {self.name!r}: kind=http needs `transport`")
+        if self.kind == "subprocess" and not (self.python and self.script):
+            raise ValueError(f"minter {self.name!r}: kind=subprocess needs `python` and `script`")
+        return self
+
+
+class FailurePolicyConfig(_Model):
+    transient_retries: int = Field(ge=0)
+    transient_backoff_s: List[float] = Field(min_length=1)
+    rate_limit_backoff_s: float = Field(gt=0)
+
+
+class RateLimitConfig(_Model):
+    api_per_minute: int = Field(gt=0)
+    page_per_10min: int = Field(gt=0)
+
+
+class DispatcherConfig(_Model):
+    mode: Literal["shadow", "live"]
+    admin_chat_id: Optional[int] = None
+    show_description_chars: int = Field(default=300, ge=0)
+
+
+class ScraperConfig(_Model):
+    upwork: UpworkConfig
+    transports: Dict[str, TransportConfig]
+    poller: PollerConfig
+    tokens: TokensConfig
+    minters: List[MinterConfig] = Field(min_length=1)
+    failure_policy: FailurePolicyConfig
+    rate_limit: RateLimitConfig
+    backend: Literal["redis", "memory"]
+    egress_id: str = "default"
+    dispatcher: DispatcherConfig
+    retention_days: int = Field(gt=0)
+
+    @model_validator(mode="after")
+    def _references_resolve(self) -> "ScraperConfig":
+        known = set(self.transports)
+        if self.poller.transport not in known:
+            raise ValueError(f"poller.transport {self.poller.transport!r} is not defined under transports")
+        if self.poller.fallback_transport and self.poller.fallback_transport not in known:
+            raise ValueError(f"poller.fallback_transport {self.poller.fallback_transport!r} is not defined under transports")
+        names = [m.name for m in self.minters]
+        if len(names) != len(set(names)):
+            raise ValueError("minter names must be unique")
+        for m in self.minters:
+            if m.kind == "http" and m.transport not in known:
+                raise ValueError(f"minter {m.name!r}: transport {m.transport!r} is not defined under transports")
+        if self.poller.details_count > self.poller.ids_count:
+            raise ValueError("poller.details_count cannot exceed poller.ids_count")
+        return self
+
+
+def load_scraper_config(path: str | Path | None = None) -> ScraperConfig:
+    resolved = Path(path) if path else Path(os.environ.get(ENV_PATH_KEY) or DEFAULT_PATH)
+    if not resolved.exists():
+        raise ConfigError(f"scraper config not found: {resolved}")
+    try:
+        raw = yaml.safe_load(resolved.read_text(encoding="utf-8")) or {}
+        return ScraperConfig.model_validate(raw)
+    except (yaml.YAMLError, ValidationError) as ex:
+        raise ConfigError(f"invalid scraper config {resolved}:\n{ex}") from ex

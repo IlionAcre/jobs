@@ -1,0 +1,320 @@
+{
+ "data": {
+  "search": {
+   "universalSearchNuxt": {
+    "visitorJobSearchV1": {
+     "results": [
+      {
+       "id": "2105345051785102467",
+       "title": "Experienced Python Developer Needed for Deriv Trading Bot, API & Risk Management",
+       "description": "I am looking for an experienced Python developer to build an automated trading bot for Deriv using the official Deriv API/WebSocket.\n\nMain requirements:\n\n* Connect securely to my Deriv account through the official API.\n* Analyse supported Deriv markets and generate objective BUY/SELL signals based on a clearly defined strategy.\n* Implement technical indicators such as EMA, RSI and ATR where appropriate.\n* Include configurable entry and exit rules.\n* Include proper risk management: position sizing, stop-loss, take-profit, maximum daily loss, maximum consecutive losses and a maximum number of si",
+       "relevanceEncoded": "{\"position\":\"0\"}",
+       "ontologySkills": [
+        {
+         "uid": "996364628025274386",
+         "parentSkillUid": null,
+         "prefLabel": "Python",
+         "prettyName": "Python",
+         "freeText": null,
+         "highlighted": true
+        },
+        {
+         "uid": "1110580482566246400",
+         "parentSkillUid": null,
+         "prefLabel": "API Integration",
+         "prettyName": "API Integration",
+         "freeText": null,
+         "highlighted": false
+        },
+        {
+         "uid": "1031626717876699136",
+         "parentSkillUid": null,
+         "prefLabel": "Automation",
+         "prettyName": "Automation",
+         "freeText": null,
+         "highlighted": false
+        },
+        {
+         "uid": "1031626739473170432",
+         "parentSkillUid": null,
+         "prefLabel": "Forex Trading",
+         "prettyName": "Forex Trading",
+         "freeText": null,
+         "highlighted": false
+        },
+        {
+         "uid": "1110580682663907328",
+         "parentSkillUid": null,
+         "prefLabel": "RESTful API",
+         "prettyName": "RESTful API",
+         "freeText": null,
+         "highlighted": false
+        }
+       ],
+       "jobTile": {
+        "job": {
+         "id": "2105345051785102467",
+         "ciphertext": "~022105345051785102467",
+         "jobType": "FIXED",
+         "weeklyRetainerBudget": null,
+         "hourlyBudgetMax": null,
+         "hourlyBudgetMin": null,
+         "hourlyEngagementType": null,
+         "contractorTier": "ExpertLevel",
+         "sourcingTimestamp": null,
+         "createTime": "2026-09-30T17:12:30.807Z",
+         "publishTime": "2026-09-30T17:19:50.022Z",
+         "hourlyEngagementDuration": null,
+         "fixedPriceAmount": {
+          "isoCurrencyCode": null,
+          "amount": "300.0"
+         },
+         "fixedPriceEngagementDuration": {
+          "id": "474250516458926082",
+          "rid": 3,
+          "label": "1 to 3 months",
+          "weeks": 9,
+          "ctime": "2014-06-04T17:59:10.123Z",
+          "mtime": "2014-06-04T17:59:10.123Z"
+         }
+        }
+       }
+      },
+      {
+       "id": "2105345491940444167",
+       "title": "Experience needed with WhatsApp Groups via official API or OpenWA for a small business",
+       "description": "We need a reliable and programmatic way to create groups in WhatsApp and then interact with them.  We  tried the official API route but we are not big enough of a company to be able to get OBA status.  We can do what we need to do using the OpenWA library, however, we are concerned as it is not official that we might get banned and loose access to our customers.  We have ideas of how to solve it, but we need someone that has successfully dealt with this before as we can not afford to loose access and ability to contact the groups we create and the users we interact with through them.\n\nIf you h",
+       "relevanceEncoded": "{\"position\":\"1\"}",
+       "ontologySkills": [
+        {
+         "uid": "996364628025274386",
+         "parentSkillUid": null,
+         "prefLabel": "Python",
+         "prettyName": "Python",
+         "freeText": null,
+         "highlighted": true
+        },
+        {
+         "uid": "1110580482566246400",
+         "parentSkillUid": null,
+         "prefLabel": "API Integration",
+         "prettyName": "API Integration",
+         "freeText": null,
+         "highlighted": false
+        },
+        {
+         "uid": "1031626795584569344",
+         "parentSkillUid": null,
+         "prefLabel": "WhatsApp",
+         "prettyName": "WhatsApp",
+         "freeText": null,
+         "highlighted": false
+        }
+       ],
+       "jobTile": {
+        "job": {
+         "id": "2105345491940444167",
+         "ciphertext": "~022105345491940444167",
+         "jobType": "HOURLY",
+         "weeklyRetainerBudget": null,
+         "hourlyBudgetMax": "65.0",
+         "hourlyBudgetMin": "25.0",
+         "hourlyEngagementType": "PART_TIME",
+         "contractorTier": "ExpertLevel",
+         "sourcingTimestamp": null,
+         "createTime": "2026-09-30T17:14:15.863Z",
+         "publishTime": "2026-09-30T17:19:16.005Z",
+         "hourlyEngagementDuration": {
+          "rid": 4,
+          "label": "Less than 1 month",
+          "weeks": 3,
+          "mtime": "2014-06-04T17:59:10.123Z",
+          "ctime": "2014-06-04T17:59:10.123Z"
+         },
+         "fixedPriceAmount": null,
+         "fixedPriceEngagementDuration": null
+        }
+       }
+      },
+      {
+       "id": "2105343861471554272",
+       "title": "iOS 3D Scanning App and SDK Developer | LiDAR & Photogrammetry",
+       "description": "I am looking for an experienced developer or small team to build an iPhone/iPad 3D scanning application, using Dot3D, PIX4Dcatch, and EveryPoint as references for functionality and output quality.\n\nThe solution must also include a reusable SDK, allowing us to provide the scanning technology to other organisations for integration into their own applications.\n\nWhat we need\n\n* Combine LiDAR depth data, camera images, and motion/tracking data to reconstruct physical spaces.\n* Use photogrammetry alongside LiDAR to improve geometric detail and produce coloured point clouds and textured 3D models.\n* ",
+       "relevanceEncoded": "{\"position\":\"2\"}",
+       "ontologySkills": [
+        {
+         "uid": "996364628025274386",
+         "parentSkillUid": null,
+         "prefLabel": "Python",
+         "prettyName": "Python",
+         "freeText": null,
+         "highlighted": true
+        },
+        {
+         "uid": "1031626726596657152",
+         "parentSkillUid": null,
+         "prefLabel": "Computer Vision",
+         "prettyName": "Computer Vision",
+         "freeText": null,
+         "highlighted": false
+        },
+        {
+         "uid": "1031626730904207360",
+         "parentSkillUid": null,
+         "prefLabel": "Deep Learning",
+         "prettyName": "Deep Learning",
+         "freeText": null,
+         "highlighted": false
+        },
+        {
+         "uid": "1031626775565156352",
+         "parentSkillUid": null,
+         "prefLabel": "Robot Operating System",
+         "prettyName": "Robot Operating System",
+         "freeText": null,
+         "highlighted": false
+        },
+        {
+         "uid": "1031626733089439744",
+         "parentSkillUid": null,
+         "prefLabel": "Drone",
+         "prettyName": "Drone",
+         "freeText": null,
+         "highlighted": false
+        },
+        {
+         "uid": "1031626773509947392",
+         "parentSkillUid": null,
+         "prefLabel": "Raspberry Pi",
+         "prettyName": "Raspberry Pi",
+         "freeText": null,
+         "highlighted": false
+        },
+        {
+         "uid": "1633880476509859841",
+         "parentSkillUid": null,
+         "prefLabel": "YOLO",
+         "prettyName": "YOLO",
+         "freeText": null,
+         "highlighted": false
+        },
+        {
+         "uid": "1031626775539990528",
+         "parentSkillUid": null,
+         "prefLabel": "Robotics",
+         "prettyName": "Robotics",
+         "freeText": null,
+         "highlighted": false
+        }
+       ],
+       "jobTile": {
+        "job": {
+         "id": "2105343861471554272",
+         "ciphertext": "~022105343861471554272",
+         "jobType": "HOURLY",
+         "weeklyRetainerBudget": null,
+         "hourlyBudgetMax": null,
+         "hourlyBudgetMin": null,
+         "hourlyEngagementType": "PART_TIME",
+         "contractorTier": "IntermediateLevel",
+         "sourcingTimestamp": null,
+         "createTime": "2026-09-30T17:07:47.042Z",
+         "publishTime": "2026-09-30T17:12:47.575Z",
+         "hourlyEngagementDuration": {
+          "rid": 4,
+          "label": "Less than 1 month",
+          "weeks": 3,
+          "mtime": "2014-06-04T17:59:10.123Z",
+          "ctime": "2014-06-04T17:59:10.123Z"
+         },
+         "fixedPriceAmount": null,
+         "fixedPriceEngagementDuration": null
+        }
+       }
+      },
+      {
+       "id": "2105343402835083325",
+       "title": "Economic & Banking Strategy Expert — Macro, Risk & Opportunities",
+       "description": "I am looking for a high-calibre economist, banking strategist, credit/risk professional or financial-sector consultant who can connect macroeconomic developments to commercial banking performance, risk and strategic opportunity.\n\nThis is not a conventional economic research assignment.\n\nI am looking for someone who can answer the question:\n\nWhat does what is happening in the economy actually mean for the bank?\n\nThe work will involve assessing developments across inflation, interest rates, FX, GDP, monetary and fiscal policy, liquidity, government borrowing, commodities, capital flows and other",
+       "relevanceEncoded": "{\"position\":\"3\"}",
+       "ontologySkills": [
+        {
+         "uid": "1045317634621472768",
+         "parentSkillUid": null,
+         "prefLabel": "Finance & Accounting",
+         "prettyName": "Finance & Accounting",
+         "freeText": null,
+         "highlighted": false
+        },
+        {
+         "uid": "1204836473864568832",
+         "parentSkillUid": null,
+         "prefLabel": "Research & Strategy",
+         "prettyName": "Research & Strategy",
+         "freeText": null,
+         "highlighted": false
+        },
+        {
+         "uid": "1225465956039626752",
+         "parentSkillUid": null,
+         "prefLabel": "Risk Analysis",
+         "prettyName": "Risk Analysis",
+         "freeText": null,
+         "highlighted": false
+        },
+        {
+         "uid": "1031626733802471424",
+         "parentSkillUid": null,
+         "prefLabel": "Economic Analysis",
+         "prettyName": "Economic Analysis",
+         "freeText": null,
+         "highlighted": false
+        },
+        {
+         "uid": "1031626777888800768",
+         "parentSkillUid": null,
+         "prefLabel": "Scenario Planning",
+         "prettyName": "Scenario Planning",
+         "freeText": null,
+         "highlighted": false
+        },
+        {
+         "uid": "1031626738428788736",
+         "parentSkillUid": null,
+         "prefLabel": "Financial Risk",
+         "prettyName": "Financial Risk",
+         "freeText": null,
+         "highlighted": false
+        }
+       ],
+       "jobTile": {
+        "job": {
+         "id": "2105343402835083325",
+         "ciphertext": "~022105343402835083325",
+         "jobType": "HOURLY",
+         "weeklyRetainerBudget": null,
+         "hourlyBudgetMax": null,
+         "hourlyBudgetMin": null,
+         "hourlyEngagementType": "PART_TIME",
+         "contractorTier": "ExpertLevel",
+         "sourcingTimestamp": null,
+         "createTime": "2026-09-30T17:05:57.685Z",
+         "publishTime": "2026-09-30T17:10:58.308Z",
+         "hourlyEngagementDuration": {
+          "rid": 4,
+          "label": "Less than 1 month",
+          "weeks": 3,
+          "mtime": "2014-06-04T17:59:10.123Z",
+          "ctime": "2014-06-04T17:59:10.123Z"
+         },
+         "fixedPriceAmount": null,
+         "fixedPriceEngagementDuration": null
+        }
+       }
+      }
+     ]
+    }
+   }
+  }
+ }
+}

@@ -1,0 +1,44 @@
+{
+ "data": {
+  "search": {
+   "universalSearchNuxt": {
+    "visitorJobSearchV1": {
+     "results": [
+      {
+       "jobTile": {
+        "job": {
+         "ciphertext": "~022105345051785102467",
+         "publishTime": "2026-09-30T17:19:50.022Z"
+        }
+       }
+      },
+      {
+       "jobTile": {
+        "job": {
+         "ciphertext": "~022105345491940444167",
+         "publishTime": "2026-09-30T17:19:16.005Z"
+        }
+       }
+      },
+      {
+       "jobTile": {
+        "job": {
+         "ciphertext": "~022105343861471554272",
+         "publishTime": "2026-09-30T17:12:47.575Z"
+        }
+       }
+      },
+      {
+       "jobTile": {
+        "job": {
+         "ciphertext": "~022105343402835083325",
+         "publishTime": "2026-09-30T17:10:58.308Z"
+        }
+       }
+      }
+     ]
+    }
+   }
+  }
+ }
+}

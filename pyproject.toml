@@ -8,14 +8,27 @@ dependencies = [
     "alembic>=1.14.1",
     "aiogram>=3.24.0",
     "camoufox[geoip]>=0.4.11",
-    "curl-cffi>=0.14.0",
+    "curl-cffi>=0.16.3",
+    "httpcloak>=1.7.2",
     "lxml>=6.0.2",
     "playwright>=1.58.0",
+    "psutil>=7.2.2",
     "psycopg[binary]>=3.3.2",
     "pydantic>=2.12.5",
     "python-dotenv>=1.2.1",
     "pyyaml>=6.0.2",
     "redis>=7.1.0",
+    # Must stay on standard urllib3 (HTTP/1.1): a Python client over HTTP/2 is blocked by Cloudflare.
+    # Never add niquests / urllib3-future to this environment.
+    "requests>=2.32.5",
     "seleniumbase>=4.45.7",
     "sqlalchemy>=2.0.45",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+markers = [
+    "live: hits the real Upwork site (opt-in: pytest -m live). Keep to a handful of requests.",
+]
+addopts = "-m 'not live'"

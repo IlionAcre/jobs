@@ -1,0 +1,80 @@
+# Scraper pipeline settings. Secrets (DB, Redis URL, Telegram token) stay in .env.
+# Edit, then restart the scraper processes. Unknown keys are rejected at startup.
+# Why each value is what it is: research/upwork_recon/ (file numbers in comments).
+
+upwork:
+  search_page_url: "https://www.upwork.com/nx/search/jobs/"
+  api_url: "https://www.upwork.com/api/graphql/v1?alias=visitorJobSearch"
+  token_cookie: "UniversalSearchNuxt_vt"        # 02: the API's only credential
+  job_url_template: "https://www.upwork.com/jobs/{job_id}"
+
+# HTTP clients. The key is the name other sections refer to.
+transports:
+  curl_cffi:
+    kind: curl_cffi
+    impersonate: chrome150      # 10: chrome142 is already challenged; bump when mints start failing
+    timeout_s: 30
+  httpcloak:
+    kind: httpcloak
+    preset: chrome-latest
+    timeout_s: 30
+  requests_h1:
+    kind: requests_h1           # plain requests over HTTP/1.1; a Python client over HTTP/2 gets 403 (10)
+    timeout_s: 30
+
+poller:
+  transport: curl_cffi
+  fallback_transport: requests_h1   # different fingerprint; used if the API starts challenging the primary
+  interval_s: 30                # 05: Upwork's index lag is ~40-75 s, faster polling buys little
+  jitter: 0.3                   # each wait is interval_s * (1 +/- jitter)
+  ids_count: 10                 # first tier: newest N job ids (~330 bytes on the wire, 04)
+  details_count: 5              # second tier: full fields for the top N, only when something is new
+  max_job_age_minutes: 3        # don't alert on jobs published longer ago than this
+
+tokens:
+  refresh_after_hours: 10       # 02: proven valid at 14 h, dead at 23 h
+  max_age_hours: 14             # stop trusting a token past this even without a 401
+
+# Fallback order for getting a token. First one that works wins.
+minters:
+  - {name: curl_cffi, kind: http, transport: curl_cffi}
+  - {name: httpcloak, kind: http, transport: httpcloak}
+  - name: hrequests
+    kind: subprocess            # separate venv: its dependencies conflict with ours
+    python: app/scraper/minters_ext/hrequests/.venv
+    script: app/scraper/minters_ext/hrequests/mint.py
+    args: [firefox]             # its chrome profile is challenged (10)
+    timeout_s: 60
+  - name: patchright
+    kind: subprocess            # headless Chromium, ~5 s, ~0.5 GB while open
+    python: app/scraper/minters_ext/patchright/.venv
+    script: app/scraper/minters_ext/patchright/mint.py
+    timeout_s: 90
+    min_free_mem_mb: 800
+  - name: seleniumbase
+    kind: subprocess            # last resort: the only tool seen passing a real Turnstile challenge (8/10)
+    python: .venv
+    script: app/scraper/minters_ext/seleniumbase/mint.py
+    args: [--headless]
+    timeout_s: 120
+    attempts: 3
+    min_free_mem_mb: 1500
+
+failure_policy:
+  transient_retries: 3          # 5xx / network: retry the same client
+  transient_backoff_s: [5, 20, 60]
+  rate_limit_backoff_s: 120     # 429: wait, never switch client (it is an IP limit, 04)
+
+rate_limit:
+  api_per_minute: 60            # shared by every fetcher on the same outbound IP
+  page_per_10min: 20            # search-page (mint) requests; 429s seen around 150-190 per 8-10 min (04)
+
+backend: redis                  # redis | memory (memory = single process, tests)
+egress_id: default              # names the outbound IP; tokens and rate budgets are per egress
+
+dispatcher:
+  mode: shadow                  # shadow = log would-be alerts (and send tagged to admin_chat_id if set) | live
+  admin_chat_id: null
+  show_description_chars: 300
+
+retention_days: 30

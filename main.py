@@ -13,11 +13,16 @@ def main():
         print("  scheduler - Run the scheduler (pushes due queries to Redis)")
         print("  init-db   - Initialize the database schema")
         print("  migrate   - Run Alembic migrations to head")
+        print("  scraper   - New scraper pipeline (python main.py scraper --help)")
         return
 
     cmd = sys.argv[1].lower()
 
-    if cmd == "bot":
+    if cmd == "scraper":
+        from app.scraper.cli import main as scraper_main
+        sys.exit(scraper_main(sys.argv[2:]))
+
+    elif cmd == "bot":
         import asyncio
         from app.notify.bot_uw import main as bot_main
         asyncio.run(bot_main())
