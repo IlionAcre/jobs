@@ -99,10 +99,12 @@ class Dispatcher:
         except Exception:  # noqa: BLE001  (a DB error must not kill the worker)
             log.exception("dispatcher_failed", extra={"fields": fields})
 
-    def run_forever(self, consumer: str, stop: Callable[[], bool] = lambda: False) -> None:
+    def run_forever(self, consumer: str, stop: Callable[[], bool] = lambda: False,
+                    on_loop: Callable[[], None] = lambda: None) -> None:
         log.info("dispatcher_ready", extra={"consumer": consumer, "mode": self._cfg.dispatcher.mode})
         queue_failures = 0
         while not stop():
+            on_loop()
             try:
                 messages = self._queue.get(JOBS_STREAM, DISPATCHERS, consumer, count=20, block_ms=5000)
             except Exception as ex:  # noqa: BLE001  (queue backend down: retry, backing off up to a minute)

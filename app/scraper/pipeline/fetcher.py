@@ -127,11 +127,13 @@ class Fetcher:
                 pass
         self._stats["failed"] += 1
 
-    def run_forever(self, consumer: str, stop: Callable[[], bool] = lambda: False) -> None:
+    def run_forever(self, consumer: str, stop: Callable[[], bool] = lambda: False,
+                    on_loop: Callable[[], None] = lambda: None) -> None:
         log.info("fetcher_ready", extra={"consumer": consumer, "transport": self._client.transport.name})
         next_beat = time.monotonic() + _HEARTBEAT_EVERY_S
         queue_failures = 0
         while not stop():
+            on_loop()
             if time.monotonic() >= next_beat:
                 # Proof of life in the logs: on a quiet market "no new jobs" and "dead" look the same otherwise.
                 log.info("fetcher_heartbeat", extra={**self._stats, "transport": self._client.transport.name})

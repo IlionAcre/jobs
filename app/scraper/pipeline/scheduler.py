@@ -55,10 +55,11 @@ class Scheduler:
         log.debug("scheduler_enqueued", extra={"count": len(due)})
         return len(due)
 
-    def run_forever(self, stop: Callable[[], bool] = lambda: False) -> None:
+    def run_forever(self, stop: Callable[[], bool] = lambda: False, on_loop: Callable[[], None] = lambda: None) -> None:
         log.info("scheduler_ready", extra={"interval_s": self._cfg.poller.interval_s})
         next_cleanup = time.monotonic() + 300  # not at startup: let the first polls go first
         while not stop():
+            on_loop()
             try:
                 self.tick()
                 if time.monotonic() >= next_cleanup:

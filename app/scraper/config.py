@@ -105,6 +105,30 @@ class DispatcherConfig(_Model):
     show_description_chars: int = Field(default=300, ge=0)
 
 
+class AlertsConfig(_Model):
+    enabled: bool = True
+    chat_id: Optional[int] = None  # where health alerts go; null = TELEGRAM_CHAT_ID from .env
+    check_interval_s: float = Field(default=60, gt=0)
+    stale_search_minutes: float = Field(default=5, gt=0)  # no successful poll for this long = problem
+    failing_search_after: int = Field(default=3, ge=1)  # consecutive failed polls
+    queue_backlog_max: int = Field(default=200, ge=1)
+    repeat_after_minutes: float = Field(default=60, gt=0)  # remind about a problem that is still open
+
+
+class DashboardConfig(_Model):
+    host: str = "127.0.0.1"  # read-only status page; keep it on localhost unless you add auth in front
+    port: int = Field(default=8787, ge=1, le=65535)
+
+
+class BotConfig(_Model):
+    enabled: bool = False  # whether `scraper up` also starts the Telegram bot
+    # Who may use the bot. `allowlist` = only allowed_chat_ids (+ TELEGRAM_CHAT_ID); `open` = anyone.
+    # A paid-subscription check can replace this later (app/scraper/bot.py::AccessPolicy).
+    access: Literal["allowlist", "open"] = "allowlist"
+    allowed_chat_ids: List[int] = Field(default_factory=list)
+    max_searches_per_chat: int = Field(default=5, ge=1)
+
+
 class ScraperConfig(_Model):
     upwork: UpworkConfig
     transports: Dict[str, TransportConfig]
@@ -116,6 +140,9 @@ class ScraperConfig(_Model):
     backend: Literal["redis", "memory"]
     egress_id: str = "default"
     dispatcher: DispatcherConfig
+    alerts: AlertsConfig = Field(default_factory=AlertsConfig)
+    dashboard: DashboardConfig = Field(default_factory=DashboardConfig)
+    bot: BotConfig = Field(default_factory=BotConfig)
     retention_days: int = Field(gt=0)
 
     @model_validator(mode="after")

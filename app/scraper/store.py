@@ -125,6 +125,18 @@ class SubscriptionRow:
     exclude_words: Tuple[str, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class ChatSubscription:
+    """A subscription as its owner sees it."""
+
+    subscription_id: int
+    search_id: int
+    query_text: str
+    enabled: bool
+    include_words: Tuple[str, ...]
+    exclude_words: Tuple[str, ...]
+
+
 class ScraperStore:
     def __init__(self, engine: Engine, schema: str = DEFAULT_SCHEMA) -> None:
         self._engine = engine
@@ -213,6 +225,72 @@ class ScraperStore:
             rows = con.execute(text(sql), {"id": int(search_id)}).all()
         return [SubscriptionRow(int(r[0]), int(r[1]), int(r[2]), tuple(r[3] or ()), tuple(r[4] or ())) for r in rows]
 
+    # --- a chat's own subscriptions (bot / CLI) ------------------------------------------------
+    # Every method takes the chat id, so one chat can never read or change another chat's subscriptions.
+
+    def subscriptions_for_chat(self, chat_id: int) -> List[ChatSubscription]:
+        sql = f"""SELECT b.subscription_id, b.search_id, s.query_text, b.enabled, b.include_words, b.exclude_words
+                  FROM {self._s}.subscriptions b JOIN {self._s}.searches s ON s.search_id = b.search_id
+                  WHERE b.chat_id = :chat ORDER BY b.subscription_id"""
+        with self._engine.begin() as con:
+            rows = con.execute(text(sql), {"chat": int(chat_id)}).all()
+        return [ChatSubscription(int(r[0]), int(r[1]), r[2], bool(r[3]), tuple(r[4] or ()), tuple(r[5] or ())) for r in rows]
+
+    def set_filters(self, chat_id: int, subscription_id: int, *, include_words: Sequence[str],
+                    exclude_words: Sequence[str]) -> bool:
+        sql = f"""UPDATE {self._s}.subscriptions SET include_words = :inc, exclude_words = :exc
+                  WHERE subscription_id = :sub AND chat_id = :chat"""
+        with self._engine.begin() as con:
+            res = con.execute(text(sql), {"inc": list(include_words), "exc": list(exclude_words),
+                                          "sub": int(subscription_id), "chat": int(chat_id)})
+            return (res.rowcount or 0) > 0
+
+    def remove_subscription(self, chat_id: int, subscription_id: int) -> bool:
+        sql = f"DELETE FROM {self._s}.subscriptions WHERE subscription_id = :sub AND chat_id = :chat"
+        with self._engine.begin() as con:
+            return (con.execute(text(sql), {"sub": int(subscription_id), "chat": int(chat_id)}).rowcount or 0) > 0
+
+    def set_chat_enabled(self, chat_id: int, enabled: bool) -> int:
+        """Pause or resume all of a chat's subscriptions. A search nobody is subscribed to stops being polled."""
+        sql = f"UPDATE {self._s}.subscriptions SET enabled = :on WHERE chat_id = :chat AND enabled <> :on"
+        with self._engine.begin() as con:
+            return con.execute(text(sql), {"on": bool(enabled), "chat": int(chat_id)}).rowcount or 0
+
+    # --- recent activity (dashboard) ----------------------------------------------------------
+
+    def recent_jobs(self, limit: int = 25) -> List[Dict[str, Any]]:
+        """Newest jobs with how long after publishing we first saw them (priming batches excluded)."""
+        sql = f"""
+            SELECT h.first_seen_at, h.publish_time, j.title, j.url, s.query_text,
+                   EXTRACT(EPOCH FROM (h.first_seen_at - h.publish_time)) AS lag_s
+            FROM {self._s}.search_hits h
+            JOIN {self._s}.searches s ON s.search_id = h.search_id
+            LEFT JOIN {self._s}.jobs j ON j.job_id = h.job_id
+            WHERE s.primed_at IS NOT NULL AND h.first_seen_at > s.primed_at + INTERVAL '5 seconds'
+            ORDER BY h.first_seen_at DESC LIMIT :limit"""
+        with self._engine.begin() as con:
+            rows = con.execute(text(sql), {"limit": int(limit)}).all()
+        return [{"seen_at": r[0], "publish_time": r[1], "title": r[2], "url": r[3], "query": r[4],
+                 "lag_s": float(r[5]) if r[5] is not None else None} for r in rows]
+
+    def activity(self, hours: float = 24.0) -> Dict[str, Any]:
+        since = "NOW() - make_interval(secs => :secs)"
+        params = {"secs": float(hours) * 3600}
+        with self._engine.begin() as con:
+            lag = con.execute(text(f"""
+                SELECT count(*), percentile_cont(0.5) WITHIN GROUP (ORDER BY x), percentile_cont(0.9) WITHIN GROUP (ORDER BY x)
+                FROM (SELECT EXTRACT(EPOCH FROM (h.first_seen_at - h.publish_time)) AS x
+                      FROM {self._s}.search_hits h JOIN {self._s}.searches s ON s.search_id = h.search_id
+                      WHERE h.first_seen_at > {since} AND h.publish_time IS NOT NULL
+                        AND s.primed_at IS NOT NULL AND h.first_seen_at > s.primed_at + INTERVAL '5 seconds'
+                        AND h.first_seen_at - h.publish_time < INTERVAL '30 minutes') t"""), params).one()
+            deliveries = con.execute(text(
+                f"SELECT status, count(*) FROM {self._s}.deliveries WHERE delivered_at > {since} GROUP BY 1"), params).all()
+        return {"hours": hours, "new_jobs": int(lag[0]),
+                "lag_median_s": float(lag[1]) if lag[1] is not None else None,
+                "lag_p90_s": float(lag[2]) if lag[2] is not None else None,
+                "deliveries": {r[0]: int(r[1]) for r in deliveries}}
+
     # --- jobs ---------------------------------------------------------------------------------
 
     def record_hits(self, search_id: int, refs: Sequence[JobRef]) -> List[str]:
@@ -297,14 +375,14 @@ class ScraperStore:
         with self._engine.begin() as con:
             searches = con.execute(text(f"""
                 SELECT s.search_id, s.query_text, s.enabled, s.primed_at IS NOT NULL, s.last_ok_at, s.consecutive_failures,
-                       s.last_error, s.next_run_at,
+                       s.last_error, s.next_run_at, s.created_at,
                        (SELECT count(*) FROM {self._s}.subscriptions b WHERE b.search_id = s.search_id AND b.enabled)
                 FROM {self._s}.searches s ORDER BY s.search_id""")).all()
             one = lambda q: con.execute(text(q)).scalar_one()  # noqa: E731
             return {
                 "searches": [{"search_id": int(r[0]), "query": r[1], "enabled": bool(r[2]), "primed": bool(r[3]),
                               "last_ok_at": r[4], "consecutive_failures": int(r[5]), "last_error": r[6],
-                              "next_run_at": r[7], "subscribers": int(r[8])} for r in searches],
+                              "next_run_at": r[7], "created_at": r[8], "subscribers": int(r[9])} for r in searches],
                 "jobs_total": one(f"SELECT count(*) FROM {self._s}.jobs"),
                 "jobs_last_hour": one(f"SELECT count(*) FROM {self._s}.jobs WHERE first_seen_at > NOW() - INTERVAL '1 hour'"),
                 "deliveries_last_hour": {r[0]: int(r[1]) for r in con.execute(text(

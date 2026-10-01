@@ -59,6 +59,11 @@ def build_limiter(config: ScraperConfig, redis=None):
     return RedisRateLimiter(redis or redis_client(), egress_id=config.egress_id)
 
 
+def build_presence(config: ScraperConfig, redis=None):
+    from app.scraper.presence import MemoryPresence, RedisPresence
+    return MemoryPresence() if config.backend == "memory" else RedisPresence(redis or redis_client())
+
+
 def build_store():
     from app.scraper.store import ScraperStore
     from app.store.db import build_db_dsn_from_env, make_engine
@@ -77,6 +82,7 @@ class Runtime:
         self.store = build_store()
         self.queue = build_queue(config, self.redis)
         self.limiter = build_limiter(config, self.redis)
+        self.presence = build_presence(config, self.redis)
         self.token_store = build_token_store(config, self.redis)
         # Minting loads the search page, which has its own (stricter) per-IP limit.
         self.tokens = build_token_manager(

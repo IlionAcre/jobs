@@ -3,8 +3,10 @@
 - Scheduled task **UpworkScraper** (at logon, 1 minute delay) runs `ops/scraper/start_scraper.cmd`.
 - The script waits for Redis (`UpworkRedis` task, see `ops/redis/README.md`), then runs
   `python main.py scraper up` and restarts it if it ever exits.
-- `up` starts three processes (scheduler, fetcher, dispatcher) and restarts any that exits. If `up` itself is
-  killed, the three notice within a few seconds and exit, so nothing is left orphaned.
+- `up` starts one process per role (scheduler, fetcher, dispatcher, dashboard, watchdog, and the bot if
+  enabled) and restarts any that exits. If `up` itself is killed, the roles notice within a few seconds and
+  exit, so nothing is left orphaned.
+- Status page: http://127.0.0.1:8787 . Health alerts go to your Telegram chat.
 - Log: `logs/scraper.log` (rotated to `scraper.log.1` at ~20 MB on start).
 
 ```

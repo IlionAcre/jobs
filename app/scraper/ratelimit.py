@@ -23,6 +23,9 @@ class RateLimiter(Protocol):
 
     def pause(self, bucket: str, seconds: float) -> None: ...
 
+    def paused_for(self, bucket: str) -> float:
+        """Seconds left on a pause, 0 if none. Read-only: does not consume budget."""
+
 
 class MemoryRateLimiter:
     """Sliding window, in-process."""
@@ -51,6 +54,10 @@ class MemoryRateLimiter:
         with self._lock:
             self._paused_until[bucket] = max(self._paused_until.get(bucket, 0.0), self._clock() + seconds)
 
+    def paused_for(self, bucket: str) -> float:
+        with self._lock:
+            return max(0.0, self._paused_until.get(bucket, 0.0) - self._clock())
+
 
 class RedisRateLimiter:
     """Fixed-window counter in Redis: one INCR per call, shared across processes and machines."""
@@ -77,6 +84,10 @@ class RedisRateLimiter:
 
     def pause(self, bucket: str, seconds: float) -> None:
         self._r.set(f"{self._base}:{bucket}:pause", "1", px=max(1, int(seconds * 1000)))
+
+    def paused_for(self, bucket: str) -> float:
+        ms = self._r.pttl(f"{self._base}:{bucket}:pause")
+        return ms / 1000 if ms and ms > 0 else 0.0
 
 
 def wait_for(limiter: RateLimiter, bucket: str, limit: int, window_s: float, *,

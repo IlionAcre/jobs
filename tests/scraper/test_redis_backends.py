@@ -8,6 +8,7 @@ import uuid
 import pytest
 
 from app.scraper.models import Token
+from app.scraper.presence import RedisPresence
 from app.scraper.queue import RedisQueue
 from app.scraper.ratelimit import API, RedisRateLimiter
 from app.scraper.tokens.store import RedisTokenStore
@@ -103,3 +104,21 @@ def test_queue_get_blocks_until_work_arrives(redis_client, prefix):
     t0 = time.time()
     got = q.get(stream, "g", "c", block_ms=3000)
     assert len(got) == 1 and time.time() - t0 < 2.5
+
+
+def test_presence_lists_live_roles_and_expires_dead_ones(redis_client, prefix):
+    presence = RedisPresence(redis_client, prefix=prefix)
+    presence.beat("fetcher", "fetcher-a", {"polls": 4}, ttl_s=30)
+    presence.beat("scheduler", "scheduler-a", ttl_s=1)
+    alive = presence.alive()
+    assert [(b.role, b.name) for b in alive] == [("fetcher", "fetcher-a"), ("scheduler", "scheduler-a")]
+    assert alive[0].info == {"polls": 4} and abs(alive[0].at - time.time()) < 5
+    time.sleep(1.3)
+    assert [b.role for b in presence.alive()] == ["fetcher"]                 # the scheduler stopped beating
+
+
+def test_rate_limiter_paused_for_is_read_only(redis_client, prefix):
+    rl = RedisRateLimiter(redis_client, prefix=prefix)
+    assert rl.paused_for(API) == 0.0
+    rl.pause(API, 5)
+    assert 0 < rl.paused_for(API) <= 5 and 0 < rl.paused_for(API) <= 5      # asking twice costs nothing

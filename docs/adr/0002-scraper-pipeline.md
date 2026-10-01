@@ -21,6 +21,7 @@ Reconnaissance (`research/upwork_recon/`) established how the site actually work
 A pipeline of three roles connected by queues, each a separate module and entrypoint:
 
     scheduler -> [work queue] -> fetcher(s) -> [jobs queue] -> dispatcher -> Telegram
+    watchdog (alerts) · dashboard (status page) · bot (subscriptions)        <- supporting roles
 
 - **Fetch once, fan out.** A `search` is a distinct query text, polled once; `subscriptions` link chats to
   searches. Request volume grows with distinct searches, not with users.
@@ -47,9 +48,14 @@ A pipeline of three roles connected by queues, each a separate module and entryp
 - `requests` must stay on standard urllib3 (HTTP/1.1). Never install niquests/urllib3-future in the main
   environment.
 - Delivery is at-most-once per chat and job (a delivery row is written before sending).
-- No proactive alerting yet: health is JSON logs (including a fetcher heartbeat every 5 minutes) and
-  `python main.py scraper status`, which exits non-zero when a search has gone stale. An alert system and
-  an admin dashboard are deliberately out of scope for now.
+- Health has one definition (`app/scraper/health.py`) used by three views: a watchdog role that messages
+  the admin chat when a problem opens, persists or resolves; a read-only dashboard served by the pipeline
+  itself (standard library, localhost, no login); and `python main.py scraper status`.
+  The watchdog is silent when healthy, so it cannot report its own death; the dashboard `/healthz` endpoint
+  is the hook for an external uptime check.
+- A Telegram bot (`app/scraper/bot.py`) manages subscriptions and filters. Access is an `AccessPolicy`
+  (allowlist or open) because there is no portal or payment system yet; a paid-subscription policy slots
+  in there later. The frontend in `frontend/` is a mock-up with no backend and is not connected.
 - Redis is required for multi-process operation (see `ops/redis/README.md`).
 
 ## Supersedes / relates to

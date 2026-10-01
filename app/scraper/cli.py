@@ -1,11 +1,15 @@
 """
 `python main.py scraper <command>`
 
-  up           start scheduler + fetcher + dispatcher together and keep them running
+  up           start every role together and keep them running
   scheduler    run only the scheduler   (run exactly one)
   fetcher      run only a fetcher       (run as many as the request budget allows)
   dispatcher   run only a dispatcher
+  watchdog     run only the health watchdog (Telegram alerts to the admin chat)
+  dashboard    run only the status page (http://127.0.0.1:8787 by default)
+  bot          run only the Telegram bot (/search, /filter, ...)
   seed         subscribe a chat to a search
+  filter       show or change a subscription's include/exclude words
   searches     list searches and their subscribers
   mint         get a token now (--all tries every minter and reports each)
   status       show what the pipeline is doing right now
@@ -24,18 +28,44 @@ import sys
 import threading
 import time
 from datetime import datetime, timezone
-from typing import Callable, List, Optional
+from pathlib import Path
+from typing import IO, Callable, List, Optional
 
 from dotenv import load_dotenv
 
 from app.scraper.config import REPO_ROOT, ScraperConfig, load_scraper_config
 from app.scraper.errors import ScraperError
-from app.scraper.queue import DISPATCHERS, FETCHERS, JOBS_STREAM, WORK_STREAM
 from app.shared.logging_utils import configure_logging
 
 log = logging.getLogger("scraper.cli")
-ROLES = ("scheduler", "fetcher", "dispatcher")
+CORE_ROLES = ("scheduler", "fetcher", "dispatcher")
+ROLES = CORE_ROLES + ("watchdog", "dashboard", "bot")
 PARENT_PID_ENV = "SCRAPER_SUPERVISOR_PID"
+
+
+_LOG_HANDLE: Optional[IO[str]] = None  # set by `up --log-file`; handed to every role process
+
+
+def _redirect_output(path: str) -> None:
+    """Send stdout/stderr of this process, and of every child it starts, to `path` (append).
+
+    Done here rather than with shell redirection (`>> file`) because a file opened by the Windows shell
+    cannot be opened for writing by anyone else: one lingering process then blocks every relaunch.
+    Python opens files shareable, so any number of processes can append to the same log.
+    """
+    global _LOG_HANDLE
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    handle = _LOG_HANDLE = open(target, "a", buffering=1, encoding="utf-8")
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except Exception:  # noqa: BLE001
+            pass
+    os.dup2(handle.fileno(), 1)
+    os.dup2(handle.fileno(), 2)
+    sys.stdout = open(1, "w", buffering=1, encoding="utf-8", closefd=False)
+    sys.stderr = open(2, "w", buffering=1, encoding="utf-8", closefd=False)
 
 
 def _consumer_name(role: str) -> str:
@@ -54,18 +84,64 @@ def _sender(config: ScraperConfig) -> Callable[[int, str], None]:
     return TelegramNotifier(token=token).send
 
 
+def _owner_chat_id() -> Optional[int]:
+    raw = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+    return int(raw) if raw.lstrip("-").isdigit() else None
+
+
+def _telegram_token(why: str) -> str:
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+    if not token:
+        raise SystemExit(f"TELEGRAM_BOT_TOKEN is required for {why}")
+    return token
+
+
+def enabled_roles(config: ScraperConfig) -> List[str]:
+    """What `up` starts."""
+    roles = list(CORE_ROLES) + ["dashboard"]
+    if config.alerts.enabled:
+        roles.append("watchdog")
+    if config.bot.enabled:
+        roles.append("bot")
+    return roles
+
+
 def _run_role(role: str, runtime, stop: Callable[[], bool] = lambda: False) -> None:
-    from app.scraper.pipeline.dispatcher import Dispatcher
-    from app.scraper.pipeline.fetcher import Fetcher
-    from app.scraper.pipeline.scheduler import Scheduler
+    from app.scraper.presence import Heartbeat
 
     cfg = runtime.config
+    name = _consumer_name(role)
+    beat = Heartbeat(runtime.presence, role, name)  # tells the watchdog and dashboard this role is alive
+
     if role == "scheduler":
-        Scheduler(runtime.store, runtime.queue, cfg).run_forever(stop)
+        from app.scraper.pipeline.scheduler import Scheduler
+        Scheduler(runtime.store, runtime.queue, cfg).run_forever(stop, beat)
     elif role == "fetcher":
-        Fetcher(runtime.store, runtime.queue, runtime.search_client(), runtime.limiter, cfg).run_forever(_consumer_name(role), stop)
+        from app.scraper.pipeline.fetcher import Fetcher
+        Fetcher(runtime.store, runtime.queue, runtime.search_client(), runtime.limiter, cfg).run_forever(name, stop, beat)
     elif role == "dispatcher":
-        Dispatcher(runtime.store, runtime.queue, cfg, _sender(cfg)).run_forever(_consumer_name(role), stop)
+        from app.scraper.pipeline.dispatcher import Dispatcher
+        Dispatcher(runtime.store, runtime.queue, cfg, _sender(cfg)).run_forever(name, stop, beat)
+    elif role == "watchdog":
+        from app.notify.telegram import TelegramNotifier
+        from app.scraper.health import collect
+        from app.scraper.pipeline.watchdog import Watchdog
+
+        chat_id = cfg.alerts.chat_id if cfg.alerts.chat_id is not None else _owner_chat_id()
+        if chat_id is None:
+            raise SystemExit("watchdog needs alerts.chat_id in scraper.yaml or TELEGRAM_CHAT_ID in .env")
+        notifier = TelegramNotifier(token=_telegram_token("the watchdog"))
+        Watchdog(lambda: collect(runtime), cfg, lambda text: notifier.send(chat_id, text)).run_forever(stop, beat)
+    elif role == "dashboard":
+        from app.scraper.dashboard import serve
+        serve(runtime, stop, beat)
+    elif role == "bot":
+        import asyncio
+
+        from app.scraper.bot import BotCore, build_policy, run_bot
+
+        core = BotCore(runtime.store, cfg, build_policy(cfg, _owner_chat_id()))
+        asyncio.run(run_bot(core, _telegram_token("the bot"), stop=stop, on_loop=beat))
     else:
         raise SystemExit(f"unknown role {role!r}")
 
@@ -94,11 +170,27 @@ def _parent_gone() -> Callable[[], bool]:
 
 
 def cmd_role(args, config: ScraperConfig) -> int:
+    code = 0
     try:
         _run_role(args.command, _runtime(config), _parent_gone())
     except KeyboardInterrupt:
         log.info("role_stopped", extra={"role": args.command})
-    return 0
+    except SystemExit as ex:  # a startup requirement is missing (e.g. no Telegram token)
+        print(ex, file=sys.stderr)
+        code = 2
+    except Exception:  # noqa: BLE001
+        log.exception("role_crashed", extra={"role": args.command})
+        code = 1
+    finally:
+        # A role is finished the moment its loop ends. Helpers it started (the Telegram sender's worker
+        # thread, the dashboard's HTTP server) can leave a non-daemon thread blocked forever, and a normal
+        # interpreter shutdown would wait for it: the process would linger as an orphan that still holds
+        # the log file open, which on Windows stops the start script from relaunching the pipeline.
+        logging.shutdown()
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(code)
+    return code  # not reached; keeps the signature honest for callers and tests that patch os._exit
 
 
 def cmd_up(args, config: ScraperConfig) -> int:
@@ -107,7 +199,8 @@ def cmd_up(args, config: ScraperConfig) -> int:
     if config.backend == "memory":
         runtime = _runtime(config)
         stop = threading.Event()
-        threads = [threading.Thread(target=_run_role, args=(r, runtime, stop.is_set), name=r, daemon=True) for r in ROLES]
+        threads = [threading.Thread(target=_run_role, args=(r, runtime, stop.is_set), name=r, daemon=True)
+                   for r in enabled_roles(config)]
         for t in threads:
             t.start()
         try:
@@ -121,15 +214,18 @@ def cmd_up(args, config: ScraperConfig) -> int:
 
     main_py = str(REPO_ROOT / "main.py")
     children: dict = {}
-    restarts = {r: 0 for r in ROLES}
+    roles = enabled_roles(config)
+    restarts = {r: 0 for r in roles}
 
     child_env = {**os.environ, PARENT_PID_ENV: str(os.getpid())}
 
     def start(role: str) -> None:
-        children[role] = subprocess.Popen([sys.executable, "-u", main_py, "scraper", role], cwd=str(REPO_ROOT), env=child_env)
+        out = {"stdout": _LOG_HANDLE, "stderr": subprocess.STDOUT} if _LOG_HANDLE is not None else {}
+        children[role] = subprocess.Popen([sys.executable, "-u", main_py, "scraper", role],
+                                          cwd=str(REPO_ROOT), env=child_env, **out)
         log.info("role_started", extra={"role": role, "pid": children[role].pid})
 
-    for role in ROLES:
+    for role in roles:
         start(role)
     try:
         while True:
@@ -201,29 +297,36 @@ def _ago(ts: Optional[datetime]) -> str:
 
 
 def cmd_status(args, config: ScraperConfig) -> int:
+    from app.scraper.health import CRITICAL, collect, evaluate
+
     runtime = _runtime(config)
+    health = collect(runtime)
+    problems = evaluate(health, config)
+    if health.db_error:
+        print("Postgres is not reachable:", health.db_error)
+        return 1
     snap = runtime.store.snapshot()
-    token = runtime.tokens.current()
+    token = health.token
     info = {
         "backend": config.backend,
         "dispatcher_mode": config.dispatcher.mode,
         "token": None if token is None else {"minter": token.minter, "age_hours": round((time.time() - token.minted_at) / 3600, 2),
                                              "refresh_after_hours": config.tokens.refresh_after_hours},
-        "queues": {"work_backlog": runtime.queue.backlog(WORK_STREAM, FETCHERS),
-                   "jobs_backlog": runtime.queue.backlog(JOBS_STREAM, DISPATCHERS)},
+        "queues": {"work_backlog": health.work_backlog, "jobs_backlog": health.jobs_backlog},
+        "roles": sorted({b.role for b in health.roles}),
+        "problems": [{"key": p.key, "severity": p.severity, "message": p.message} for p in problems],
         "jobs_total": snap["jobs_total"], "jobs_last_hour": snap["jobs_last_hour"],
         "deliveries_last_hour": snap["deliveries_last_hour"],
         "searches": snap["searches"],
     }
-    stale_after = max(300.0, 6 * config.poller.interval_s)
-    now = datetime.now(timezone.utc)
-    unhealthy = [s for s in snap["searches"] if s["enabled"] and s["subscribers"] and
-                 (s["last_ok_at"] is None or (now - s["last_ok_at"]).total_seconds() > stale_after)]
+    bad_ids = {int(p.key.split(":")[1]) for p in problems if p.key.startswith(("search_stale:", "search_failing:"))}
+    unhealthy = [s for s in snap["searches"] if s["search_id"] in bad_ids]
     if args.json:
         print(json.dumps(info, indent=2, default=str))
     else:
         t = info["token"]
         print(f"backend: {info['backend']}   dispatcher: {info['dispatcher_mode']}")
+        print("roles:   " + (", ".join(info["roles"]) or "none running"))
         print("token:   " + ("none (will be minted on the first poll)" if t is None else
                              f"minted by {t['minter']}, {t['age_hours']} h old (refresh at {t['refresh_after_hours']} h)"))
         print(f"queues:  work backlog {info['queues']['work_backlog']}, jobs backlog {info['queues']['jobs_backlog']}")
@@ -238,7 +341,35 @@ def cmd_status(args, config: ScraperConfig) -> int:
                 print(f"       last error: {s['last_error'][:150]}")
         if not snap["searches"]:
             print("  (no searches yet: python main.py scraper seed --query \"python OR scraping\")")
-    return 1 if unhealthy else 0
+        if problems:
+            print("\nproblems:")
+            for p in problems:
+                print(f"  [{p.severity}] {p.message}")
+        else:
+            print("\nno problems")
+    return 1 if any(p.severity == CRITICAL for p in problems) else 0
+
+
+def cmd_filter(args, config: ScraperConfig) -> int:
+    from app.scraper.factory import build_store
+
+    chat_id = args.chat or _owner_chat_id()
+    if chat_id is None:
+        raise SystemExit("give --chat or set TELEGRAM_CHAT_ID")
+    store = build_store()
+    mine = store.subscriptions_for_chat(int(chat_id))
+    sub = next((s for s in mine if s.subscription_id == args.subscription), None)
+    if sub is None:
+        raise SystemExit(f"chat has no subscription {args.subscription}; it has: {[s.subscription_id for s in mine]}")
+    if args.clear:
+        store.set_filters(int(chat_id), sub.subscription_id, include_words=[], exclude_words=[])
+    elif args.include is not None or args.exclude is not None:
+        store.set_filters(int(chat_id), sub.subscription_id,
+                          include_words=[w.lower() for w in (args.include if args.include is not None else sub.include_words)],
+                          exclude_words=[w.lower() for w in (args.exclude if args.exclude is not None else sub.exclude_words)])
+    sub = next(s for s in store.subscriptions_for_chat(int(chat_id)) if s.subscription_id == args.subscription)
+    print(f"subscription {sub.subscription_id}: {sub.query_text!r}\n  include: {list(sub.include_words) or 'anything'}\n  exclude: {list(sub.exclude_words) or 'nothing'}")
+    return 0
 
 
 def cmd_searches(args, config: ScraperConfig) -> int:
@@ -287,7 +418,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(prog="main.py scraper", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--config", help="path to scraper.yaml (default: app/config/scraper.yaml or $SCRAPER_CONFIG_PATH)")
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("up")
+    up = sub.add_parser("up")
+    up.add_argument("--log-file", help="append all output (this process and every role) to this file")
     for role in ROLES:
         sub.add_parser(role)
     seed = sub.add_parser("seed")
@@ -302,6 +434,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     status = sub.add_parser("status")
     status.add_argument("--json", action="store_true")
     sub.add_parser("searches")
+    flt = sub.add_parser("filter")
+    flt.add_argument("subscription", type=int, help="subscription id (see `scraper searches`)")
+    flt.add_argument("--chat", type=int, help="chat that owns it (default: TELEGRAM_CHAT_ID)")
+    flt.add_argument("--include", nargs="*", help="alert only if one of these whole words/phrases appears")
+    flt.add_argument("--exclude", nargs="*", help="never alert if one of these appears")
+    flt.add_argument("--clear", action="store_true", help="remove the filter")
     report = sub.add_parser("shadow-report")
     report.add_argument("--query", default="python OR scraping", help="the search both monitors run")
     report.add_argument("--hours", type=float, default=24.0)
@@ -310,10 +448,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     load_dotenv(REPO_ROOT / ".env")
+    if args.command == "up" and args.log_file:
+        _redirect_output(args.log_file)
     if args.command in ROLES or args.command == "up":
         configure_logging()
     config = load_scraper_config(args.config)
 
     handlers = {"up": cmd_up, "seed": cmd_seed, "mint": cmd_mint, "status": cmd_status,
-                "searches": cmd_searches, "cleanup": cmd_cleanup, "shadow-report": cmd_shadow_report, **{r: cmd_role for r in ROLES}}
+                "searches": cmd_searches, "filter": cmd_filter, "cleanup": cmd_cleanup, "shadow-report": cmd_shadow_report, **{r: cmd_role for r in ROLES}}
     return handlers[args.command](args, config)

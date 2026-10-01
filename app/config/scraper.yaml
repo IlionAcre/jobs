@@ -77,4 +77,26 @@ dispatcher:
   admin_chat_id: null
   show_description_chars: 300
 
+# Health alerts sent to you on Telegram by the watchdog role (problem opened / still open / resolved).
+alerts:
+  enabled: true
+  chat_id: null                 # null = TELEGRAM_CHAT_ID from .env
+  check_interval_s: 60
+  stale_search_minutes: 5       # a subscribed search with no successful poll for this long
+  failing_search_after: 3       # consecutive failed polls
+  queue_backlog_max: 200
+  repeat_after_minutes: 60      # reminder while a problem stays open
+
+# Read-only status page: http://127.0.0.1:8787  (JSON at /api/status, /healthz for monitors)
+dashboard:
+  host: 127.0.0.1               # localhost only; there is no login on this page
+  port: 8787
+
+# Telegram bot commands (/search, /searches, /filter, /remove, /pause, /resume).
+bot:
+  enabled: false                # true = `scraper up` also runs the bot
+  access: allowlist             # allowlist | open  (no payments/portal yet, so access is by chat id)
+  allowed_chat_ids: []          # TELEGRAM_CHAT_ID from .env is always allowed
+  max_searches_per_chat: 5      # each distinct search costs requests against the IP's budget
+
 retention_days: 30
