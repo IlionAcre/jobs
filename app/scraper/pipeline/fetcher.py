@@ -17,6 +17,7 @@ log = logging.getLogger("scraper.fetcher")
 _STALE_AFTER_INTERVALS = 3  # queued work older than this many poll intervals is dropped, not replayed
 _PAUSE_AFTER_NO_TOKEN_S = 60.0
 _HEARTBEAT_EVERY_S = 300.0
+_DETAILS_MARGIN = 2  # extra rows requested in tier 2, in case new jobs arrived since tier 1
 
 
 class Fetcher:
@@ -64,10 +65,19 @@ class Fetcher:
 
         new_set = set(new_ids)
         deepest = max(i for i, ref in enumerate(refs) if ref.job_id in new_set)
+        # A job posted between the two requests pushes everything down a row, so ask for a few more.
+        count = min(self._cfg.poller.ids_count, deepest + 1 + _DETAILS_MARGIN)
         self._throttle()
-        jobs = self._client.search_details(search.query_text, count=deepest + 1)
+        jobs = self._client.search_details(search.query_text, count=count)
         self._store.upsert_jobs(jobs)
         by_id = {job.job_id: job for job in jobs}
+
+        # The two requests can see slightly different results. A new id that the details response lacks
+        # must not stay "seen", or it would never be alerted: forget it so the next poll finds it again.
+        missing = [job_id for job_id in new_ids if job_id not in by_id]
+        if missing:
+            self._store.forget_hits(search_id, missing)
+            log.warning("new_job_missing_from_details_will_retry", extra={"search_id": search_id, "job_ids": missing})
 
         now = datetime.fromtimestamp(self._clock(), tz=timezone.utc)
         max_age_s = self._cfg.poller.max_job_age_minutes * 60
@@ -75,7 +85,6 @@ class Fetcher:
         for job_id in new_ids:
             job = by_id.get(job_id)
             if job is None:
-                log.warning("new_job_missing_from_details", extra={"search_id": search_id, "job_id": job_id})
                 continue
             age_s = (now - job.publish_time).total_seconds() if job.publish_time else None
             if age_s is not None and age_s > max_age_s:

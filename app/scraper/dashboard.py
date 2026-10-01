@@ -62,7 +62,7 @@ def build_status(snap: HealthSnapshot, problems: List[Problem], config: ScraperC
                       "last_error": s["last_error"] if s["consecutive_failures"] else None} for s in snap.searches],
         "jobs_total": snap.jobs_total,
         "activity": activity,
-        "recent_jobs": [{"seen_at": j["seen_at"].isoformat(timespec="seconds") if j["seen_at"] else None,
+        "recent_jobs": [{"seen_at": j["seen_at"].astimezone(timezone.utc).isoformat(timespec="seconds") if j["seen_at"] else None,
                          "lag_s": None if j["lag_s"] is None else round(j["lag_s"]), "title": j["title"],
                          "url": j["url"], "query": j["query"]} for j in (recent or [])],
     }

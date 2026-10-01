@@ -306,6 +306,14 @@ class ScraperStore:
                     new.add(ref.job_id)
         return [r.job_id for r in refs if r.job_id in new]
 
+    def forget_hits(self, search_id: int, job_ids: Sequence[str]) -> None:
+        """Un-remember jobs for a search, so the next poll treats them as new again."""
+        if not job_ids:
+            return
+        sql = f"DELETE FROM {self._s}.search_hits WHERE search_id = :search AND job_id = ANY(:jobs)"
+        with self._engine.begin() as con:
+            con.execute(text(sql), {"search": int(search_id), "jobs": list(job_ids)})
+
     def upsert_jobs(self, jobs: Sequence[Job]) -> None:
         sql = f"""
             INSERT INTO {self._s}.jobs (platform, job_id, url, title, description, skills, job_type, fixed_amount,

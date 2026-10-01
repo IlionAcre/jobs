@@ -54,7 +54,8 @@ class FakeClient:
 
     def search_details(self, query_text, count):
         self.details_calls.append(count)
-        return self.results[:count]
+        hidden, self.hide_from_details_once = getattr(self, "hide_from_details_once", set()), set()
+        return [j for j in self.results[:count] if j.job_id not in hidden]
 
 
 @pytest.fixture
@@ -194,7 +195,7 @@ def test_new_job_triggers_details_for_just_enough_rows_and_one_event(rig):
     rig.fetcher.poll(s)
     rig.client.results = [job("~new"), job("~a"), job("~b")]
     assert rig.fetcher.poll(s) == 1
-    assert rig.client.details_calls == [1]                                    # new job is at position 0
+    assert rig.client.details_calls == [3]                                    # position 0, plus a margin of 2
     assert [f["job_id"] for f in drain(rig.queue, JOBS_STREAM, DISPATCHERS)] == ["~new"]
     assert rig.store.get_job("~new").title == "Python scraper"
     assert rig.fetcher.poll(s) == 0                                           # not new the second time
@@ -205,7 +206,29 @@ def test_two_new_jobs_between_polls_are_both_emitted(rig):
     rig.client.results = [job("~a")]
     rig.fetcher.poll(s)
     rig.client.results = [job("~n2"), job("~n1"), job("~a")]
-    assert rig.fetcher.poll(s) == 2 and rig.client.details_calls == [2]
+    assert rig.fetcher.poll(s) == 2 and rig.client.details_calls == [4]
+
+
+def test_details_request_never_exceeds_the_ids_page(rig):
+    s = rig.store.upsert_search("python")
+    rig.client.results = [job(f"~old{i}") for i in range(10)]
+    rig.fetcher.poll(s)
+    rig.client.results = [job(f"~new{i}") for i in range(10)]                # a whole page of new jobs
+    assert rig.fetcher.poll(s) == 10 and rig.client.details_calls == [10]     # capped at poller.ids_count
+
+
+def test_job_missing_from_details_is_retried_on_the_next_poll_not_lost(rig):
+    # Seen live on 2026-10-01: tier 1 listed a job, tier 2 a moment later did not, and the alert was lost.
+    s = rig.store.upsert_search("python")
+    rig.client.results = [job("~a")]
+    rig.fetcher.poll(s)
+    rig.client.results = [job("~flaky"), job("~solid"), job("~a")]
+    rig.client.hide_from_details_once = {"~flaky"}
+    assert rig.fetcher.poll(s) == 1                                           # only ~solid this time
+    assert [f["job_id"] for f in drain(rig.queue, JOBS_STREAM, DISPATCHERS)] == ["~solid"]
+    assert rig.fetcher.poll(s) == 1                                           # ~flaky is found again and alerted
+    assert [f["job_id"] for f in drain(rig.queue, JOBS_STREAM, DISPATCHERS)] == ["~flaky"]
+    assert rig.fetcher.poll(s) == 0                                           # and only once
 
 
 def test_old_job_is_stored_but_not_alerted(rig):
