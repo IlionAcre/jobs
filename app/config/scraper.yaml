@@ -103,4 +103,17 @@ bot:
   max_searches_per_chat: 5      # each distinct search costs requests against the IP's budget
   commands_per_minute: 20       # per chat
 
+# Database backups: `python main.py scraper backup` (run daily by the task/timer in ops/backup).
+backup:
+  enabled: true
+  dir: null                     # null = "<repo>-backups" next to the repository
+  keep_days: 14
+  copy_to: null                 # also copy each dump here (e.g. a Google Drive sync folder); null = off
+  max_age_hours: 30             # newest dump older than this shows up as a health warning
+
+# logs/scraper.log is rotated at start-up once it passes max_mb.
+log:
+  max_mb: 20
+  keep_files: 5
+
 retention_days: 30

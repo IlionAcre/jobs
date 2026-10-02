@@ -19,8 +19,7 @@ set "OWNLOG=%LOGDIR%\start_scraper.log"
 if not exist "%LOGDIR%" mkdir "%LOGDIR%"
 cd /d "%ROOT%"
 
-rem keep one previous log once it passes ~20 MB (skipped silently if something still has it open)
-for %%F in ("%LOG%") do if exist "%LOG%" if %%~zF GTR 20000000 move /y "%LOG%" "%LOG%.1" > nul 2>&1
+rem (logs\scraper.log is rotated by `scraper up` itself: see `log:` in app\config\scraper.yaml)
 
 :wait_redis
 "%PODMAN%" exec upwork-redis redis-cli PING > nul 2>&1

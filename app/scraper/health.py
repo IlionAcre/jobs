@@ -44,10 +44,19 @@ class HealthSnapshot:
     jobs_backlog: int = 0
     api_paused_s: float = 0.0
     jobs_total: int = 0
+    backup_checked: bool = False  # true when backups are enabled and the folder was looked at
+    backup_age_s: Optional[float] = None  # age of the newest dump; None = there is none
 
 
 def collect(runtime) -> HealthSnapshot:
     snap = HealthSnapshot(at=time.time())
+    if runtime.config.backup.enabled:
+        from app.scraper.backup import latest_backup_age_s
+        try:
+            snap.backup_age_s = latest_backup_age_s(runtime.config.backup, snap.at)
+            snap.backup_checked = True
+        except OSError:
+            pass
     try:
         store_snap = runtime.store.snapshot()
         snap.searches = store_snap["searches"]
@@ -96,6 +105,14 @@ def _age_s(ts: Optional[datetime], now: float) -> Optional[float]:
 
 def evaluate(snap: HealthSnapshot, config: ScraperConfig) -> List[Problem]:
     problems: List[Problem] = []
+    if snap.backup_checked:
+        limit_h = config.backup.max_age_hours
+        if snap.backup_age_s is None:
+            problems.append(Problem("backup_missing", WARNING, "There is no database backup yet.", "no database backup"))
+        elif snap.backup_age_s > limit_h * 3600:
+            problems.append(Problem("backup_stale", WARNING,
+                                    f"The newest database backup is {snap.backup_age_s / 3600:.0f} h old (expected one every day).",
+                                    "database backup overdue"))
     if snap.db_error:
         problems.append(Problem("db_down", CRITICAL, f"Postgres is not reachable: {snap.db_error}", "Postgres unreachable"))
     if snap.backend_error:

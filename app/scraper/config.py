@@ -126,6 +126,22 @@ class DashboardConfig(_Model):
     password_env: str = "DASHBOARD_PASSWORD"
 
 
+class BackupConfig(_Model):
+    enabled: bool = True  # false = `scraper backup` does nothing and a missing backup is not a problem
+    dir: Optional[str] = None  # null = a "<repo>-backups" folder next to the repository
+    keep_days: float = Field(default=14, gt=0)
+    copy_to: Optional[str] = None  # second folder for each dump, e.g. one synced to a cloud drive; null = off
+    max_age_hours: float = Field(default=30, gt=0)  # newest dump older than this = health warning
+    pg_bin_dir: Optional[str] = None  # where pg_dump/pg_restore live, if not on PATH
+    timeout_s: float = Field(default=900, gt=0)
+
+
+class LogConfig(_Model):
+    # `scraper up --log-file`: when the file passes max_mb at start-up it is rotated (file.1, file.2, ...).
+    max_mb: float = Field(default=20, gt=0)
+    keep_files: int = Field(default=5, ge=1)
+
+
 class BotConfig(_Model):
     enabled: bool = False  # whether `scraper up` also starts the Telegram bot
     # Who may use the bot. `allowlist` = only allowed_chat_ids (+ TELEGRAM_CHAT_ID); `open` = anyone.
@@ -150,6 +166,8 @@ class ScraperConfig(_Model):
     alerts: AlertsConfig = Field(default_factory=AlertsConfig)
     dashboard: DashboardConfig = Field(default_factory=DashboardConfig)
     bot: BotConfig = Field(default_factory=BotConfig)
+    backup: BackupConfig = Field(default_factory=BackupConfig)
+    log: LogConfig = Field(default_factory=LogConfig)
     retention_days: int = Field(gt=0)
 
     @model_validator(mode="after")

@@ -14,7 +14,8 @@
   mint         get a token now (--all tries every minter and reports each)
   status       show what the pipeline is doing right now
   cleanup      delete rows older than the retention window
-  shadow-report  compare what this pipeline saw with the legacy monitor (upwork.jobs)
+  backup       dump the database to the backup folder and prune old dumps
+  shadow-report  compare what this pipeline alerted on with the legacy monitor (upwork.jobs)
 """
 from __future__ import annotations
 
@@ -44,6 +45,26 @@ PARENT_PID_ENV = "SCRAPER_SUPERVISOR_PID"
 
 
 _LOG_HANDLE: Optional[IO[str]] = None  # set by `up --log-file`; handed to every role process
+
+
+def rotate_log(path: Path, *, max_bytes: int, keep: int) -> bool:
+    """file -> file.1 -> file.2 ... (at most `keep` old files) once `path` passes `max_bytes`.
+
+    Done at start-up, before the file is opened. If something still has it open (Windows refuses the
+    rename), rotation is skipped this time rather than failing the start.
+    """
+    try:
+        if not path.exists() or path.stat().st_size <= max_bytes:
+            return False
+        path.with_name(f"{path.name}.{keep}").unlink(missing_ok=True)
+        for n in range(keep - 1, 0, -1):
+            older = path.with_name(f"{path.name}.{n}")
+            if older.exists():
+                older.replace(path.with_name(f"{path.name}.{n + 1}"))
+        path.replace(path.with_name(f"{path.name}.1"))
+        return True
+    except OSError:
+        return False
 
 
 def _redirect_output(path: str) -> None:
@@ -432,6 +453,25 @@ def cmd_cleanup(args, config: ScraperConfig) -> int:
     return 0
 
 
+def cmd_backup(args, config: ScraperConfig) -> int:
+    from app.scraper.backup import run_backup
+
+    if not config.backup.enabled:
+        print("backups are disabled (backup.enabled: false)")
+        return 0
+    try:
+        result = run_backup(config.backup, os.environ)
+    except subprocess.CalledProcessError as ex:
+        print(f"backup failed: {ex.cmd[0]} exited {ex.returncode}: {(ex.stderr or '').strip()[:400]}", file=sys.stderr)
+        return 1
+    except Exception as ex:  # noqa: BLE001
+        print(f"backup failed: {type(ex).__name__}: {ex}", file=sys.stderr)
+        return 1
+    print(f"backup written: {result['file']} ({result['bytes'] / 1e6:.1f} MB), pruned {result['pruned']}"
+          + (f", copied to {result['copied_to']}" if result["copied_to"] else ""))
+    return 0
+
+
 def cmd_shadow_report(args, config: ScraperConfig) -> int:
     from app.scraper.shadow import shadow_report
     from app.scraper.store import normalize_query
@@ -493,15 +533,17 @@ def main(argv: Optional[List[str]] = None) -> int:
     report.add_argument("--hours", type=float, default=24.0)
     report.add_argument("--json", action="store_true")
     sub.add_parser("cleanup")
+    sub.add_parser("backup")
     args = parser.parse_args(argv)
 
     load_dotenv(REPO_ROOT / ".env")
+    config = load_scraper_config(args.config)
     if args.command == "up" and args.log_file:
+        rotate_log(Path(args.log_file), max_bytes=int(config.log.max_mb * 1e6), keep=config.log.keep_files)
         _redirect_output(args.log_file)
     if args.command in ROLES or args.command == "up":
         configure_logging()
-    config = load_scraper_config(args.config)
 
-    handlers = {"up": cmd_up, "seed": cmd_seed, "mint": cmd_mint, "status": cmd_status,
+    handlers = {"up": cmd_up, "seed": cmd_seed, "mint": cmd_mint, "status": cmd_status, "backup": cmd_backup,
                 "searches": cmd_searches, "filter": cmd_filter, "cleanup": cmd_cleanup, "shadow-report": cmd_shadow_report, **{r: cmd_role for r in ROLES}}
     return handlers[args.command](args, config)

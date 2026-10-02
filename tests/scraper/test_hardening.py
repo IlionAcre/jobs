@@ -203,3 +203,89 @@ def test_bot_refuses_a_flood_of_commands(store, cfg):
     assert "Slow down" not in bot.handle(FRIEND, "/status")          # limits are per chat
     clock[0] = 61.0
     assert "Slow down" not in bot.handle(OWNER, "/status")
+
+
+# --- backups --------------------------------------------------------------------------------------
+
+def make_dump(directory, name, age_days, now=NOW):
+    import os
+    path = directory / name
+    path.write_bytes(b"x")
+    os.utime(path, (now - age_days * 86400,) * 2)
+    return path
+
+
+def test_prune_deletes_old_dumps_but_keeps_the_newest_three(tmp_path):
+    from app.scraper.backup import list_dumps, prune
+
+    for i, age in enumerate([40, 30, 20, 10, 1]):
+        make_dump(tmp_path, f"upwork-{i}.dump", age)
+    make_dump(tmp_path, "notes.txt", 99)
+    make_dump(tmp_path, "upwork-x.part", 99)                         # an interrupted run is not a backup
+    assert [p.name for p in prune(tmp_path, keep_days=14, now=NOW)] == ["upwork-0.dump", "upwork-1.dump"]
+    assert [p.name for p in list_dumps(tmp_path)] == ["upwork-2.dump", "upwork-3.dump", "upwork-4.dump"]
+    assert prune(tmp_path, keep_days=0.5, now=NOW) == []             # never below three, however old
+    assert (tmp_path / "notes.txt").exists()
+
+
+def test_backup_dumps_verifies_copies_and_cleans_up_on_failure(tmp_path, cfg):
+    import subprocess
+    from app.scraper.backup import list_dumps, run_backup
+
+    backup = cfg.backup.model_copy(update={"dir": str(tmp_path / "local"), "copy_to": str(tmp_path / "drive")})
+    env = {"DB_NAME": "db", "DB_USER": "u", "DB_PASSWORD": "secret", "DB_HOST": "h", "DB_PORT": "5433"}
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        if cmd[0] == "pg_dump":
+            Path(cmd[cmd.index("-f") + 1]).write_bytes(b"dump")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    result = run_backup(backup, env, run=fake_run, now=datetime(2026, 10, 2, 3, 0, 0))
+    dump_cmd, dump_kwargs = calls[0]
+    assert dump_cmd[:7] == ["pg_dump", "-h", "h", "-p", "5433", "-U", "u"] and dump_cmd[-1] == "db"
+    assert dump_kwargs["env"]["PGPASSWORD"] == "secret" and "secret" not in " ".join(dump_cmd)   # never on the command line
+    assert calls[1][0][:2] == ["pg_restore", "--list"]
+    assert Path(result["file"]).name == "upwork-20261002-030000.dump" and result["bytes"] == 4
+    assert (tmp_path / "drive" / "upwork-20261002-030000.dump").read_bytes() == b"dump"
+
+    def failing_run(cmd, **kwargs):
+        Path(cmd[cmd.index("-f") + 1]).write_bytes(b"half")
+        raise subprocess.CalledProcessError(1, cmd, stderr="connection refused")
+
+    with pytest.raises(subprocess.CalledProcessError):
+        run_backup(backup, env, run=failing_run, now=datetime(2026, 10, 3, 3, 0, 0))
+    assert len(list_dumps(tmp_path / "local")) == 1 and not list((tmp_path / "local").glob("*.part"))
+
+
+@pytest.mark.parametrize("checked, age_h, expected", [
+    (False, None, []),                    # backups disabled, or the folder could not be read
+    (True, None, ["backup_missing"]),
+    (True, 5, []),
+    (True, 31, ["backup_stale"]),
+])
+def test_backup_health_rule(cfg, checked, age_h, expected):
+    from app.scraper.health import evaluate
+
+    snap = HealthSnapshot(at=NOW, roles=[RoleBeat(r, r, NOW) for r in ("scheduler", "fetcher", "dispatcher")],
+                          backup_checked=checked, backup_age_s=None if age_h is None else age_h * 3600)
+    assert [p.key for p in evaluate(snap, cfg)] == expected
+
+
+# --- log rotation ---------------------------------------------------------------------------------
+
+def test_log_rotation_keeps_a_fixed_number_of_files(tmp_path):
+    from app.scraper.cli import rotate_log
+
+    log_file = tmp_path / "scraper.log"
+    assert rotate_log(log_file, max_bytes=10, keep=2) is False       # nothing there yet
+    for generation in ("first", "second", "third"):
+        log_file.write_text(generation * 5)
+        assert rotate_log(log_file, max_bytes=10, keep=2) is True
+    assert not log_file.exists()
+    assert (tmp_path / "scraper.log.1").read_text() == "third" * 5
+    assert (tmp_path / "scraper.log.2").read_text() == "second" * 5
+    assert not (tmp_path / "scraper.log.3").exists()                 # "first" was dropped
+    log_file.write_text("small")
+    assert rotate_log(log_file, max_bytes=10, keep=2) is False and log_file.exists()
