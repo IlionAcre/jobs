@@ -256,6 +256,33 @@ def cmd_role(args, config: ScraperConfig) -> int:
     return code  # not reached; keeps the signature honest for callers and tests that patch os._exit
 
 
+def is_supervisor_cmdline(cmdline: List[str]) -> bool:
+    """True for `python [-u] main.py scraper up [...]`."""
+    names = [Path(part).name.lower() for part in cmdline]
+    if "main.py" not in names:
+        return False
+    rest = cmdline[names.index("main.py") + 1:]
+    return rest[:2] == ["scraper", "up"]
+
+
+def other_supervisor() -> Optional[int]:
+    """Pid of another running `scraper up`, if any. This process and its launcher are not counted
+    (a Windows venv's python.exe is a small launcher whose child is the real interpreter)."""
+    import psutil
+
+    mine = {os.getpid(), os.getppid()}
+    for proc in psutil.process_iter(["pid", "ppid", "cmdline"]):
+        try:
+            info = proc.info
+            if info["pid"] in mine or info["ppid"] in mine or not info["cmdline"]:
+                continue
+            if is_supervisor_cmdline(info["cmdline"]):
+                return int(info["pid"])
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    return None
+
+
 def cmd_up(args, config: ScraperConfig) -> int:
     """All roles on this machine. With Redis each role is its own process (restarted if it exits);
     with the memory backend they are threads sharing one in-process queue."""
@@ -274,6 +301,13 @@ def cmd_up(args, config: ScraperConfig) -> int:
         except KeyboardInterrupt:
             stop.set()
             return 0
+
+    other = other_supervisor()
+    if other is not None:
+        # Two pipelines would poll twice, fight over the bot's connection and double the request rate.
+        log.error("another_supervisor_running", extra={"pid": other})
+        print(f"another `scraper up` is already running (pid {other}); not starting a second one", file=sys.stderr)
+        return 3
 
     main_py = str(REPO_ROOT / "main.py")
     children: dict = {}

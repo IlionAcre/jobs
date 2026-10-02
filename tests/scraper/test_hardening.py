@@ -289,3 +289,19 @@ def test_log_rotation_keeps_a_fixed_number_of_files(tmp_path):
     assert not (tmp_path / "scraper.log.3").exists()                 # "first" was dropped
     log_file.write_text("small")
     assert rotate_log(log_file, max_bytes=10, keep=2) is False and log_file.exists()
+
+
+# --- only one supervisor ----------------------------------------------------------------------------
+
+@pytest.mark.parametrize("cmdline, expected", [
+    ([r"C:\repo\.venv\Scripts\python.exe", "-u", "main.py", "scraper", "up", "--log-file", "x.log"], True),
+    (["/opt/upwork/.venv/bin/python", "-u", "/opt/upwork/main.py", "scraper", "up"], True),
+    (["python", "main.py", "scraper", "fetcher"], False),
+    (["python", "main.py", "scraper", "status"], False),
+    (["python", "other.py", "scraper", "up"], False),
+    (["python", "main.py"], False),
+])
+def test_supervisor_command_line_is_recognised(cmdline, expected):
+    from app.scraper.cli import is_supervisor_cmdline
+
+    assert is_supervisor_cmdline(cmdline) is expected

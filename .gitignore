@@ -20,6 +20,7 @@ logs/
 
 # PowerShell and local runner scripts
 *.ps1
+!ops/**/*.ps1
 
 # Local scratch and research files
 research/

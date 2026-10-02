@@ -19,9 +19,13 @@ and exit, and the start script launches it again about 15 seconds later.
 ```
 python main.py scraper status                    # roles, token, queues, problems (exit 1 on a critical one)
 python main.py scraper shadow-report --hours 24  # compared with monitor_uw.py; exit 1 if an alert was missed
-schtasks /Run /TN UpworkScraper                  # start now
-schtasks /End /TN UpworkScraper                  # stop everything
+pwsh ops\scraper\stop_scraper.ps1                # stop everything and keep it stopped
+pwsh ops\scraper\start_scraper.ps1               # start (refuses if it is already running)
 ```
+
+Nothing shows on the desktop: the tasks run through `ops/run_hidden.vbs`, so there is no console window to
+close by accident. Ending the task in Task Scheduler does **not** stop the pipeline (it only ends the
+launcher); use the stop script. `scraper up` refuses to start while another one is running.
 
 Status page: http://127.0.0.1:8787 . Logs: `logs/scraper.log` (rotated at start-up, see `log:` in
 `app/config/scraper.yaml`) and `logs/start_scraper.log` (the start script's own lines).
@@ -72,7 +76,9 @@ $every5 = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -Repetitio
 $logon = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME"
 
 Register-ScheduledTask -TaskName UpworkScraper -Trigger @($logon, $every5) -Settings $s -Force `
-  -Action (New-ScheduledTaskAction -Execute cmd.exe -Argument "/c `"$root\ops\scraper\start_scraper.cmd`"")
+  -Action (New-ScheduledTaskAction -Execute wscript.exe -WorkingDirectory $root -Argument "//B //Nologo `"$root\opsun_hidden.vbs`" `"$root\ops\scraper\start_scraper.cmd`"")
+Register-ScheduledTask -TaskName UpworkRedis -Trigger @($logon, $every5) -Settings $s -Force `
+  -Action (New-ScheduledTaskAction -Execute wscript.exe -WorkingDirectory $root -Argument "//B //Nologo `"$root\opsun_hidden.vbs`" `"$root\opsedis\start_redis.cmd`"")
 Register-ScheduledTask -TaskName UpworkScraperCheck -Trigger @($logon, $every5) -Settings $s -Force `
   -Action (New-ScheduledTaskAction -Execute "$root\.venv\Scripts\pythonw.exe" -Argument "`"$root\ops\scraper\healthcheck.py`"" -WorkingDirectory $root)
 Register-ScheduledTask -TaskName UpworkBackup -Trigger (New-ScheduledTaskTrigger -Daily -At 03:30) -Settings $s -Force `
