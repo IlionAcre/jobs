@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily database backup of the Upwork scraper
+After=postgresql.service
+
+[Service]
+Type=oneshot
+User=upwork
+WorkingDirectory=/opt/upwork
+EnvironmentFile=/opt/upwork/.env
+ExecStart=/opt/upwork/.venv/bin/python main.py scraper backup

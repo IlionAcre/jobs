@@ -1,0 +1,11 @@
+[Unit]
+Description=Outside check of the Upwork scraper pipeline (alerts on Telegram when it does not answer)
+
+[Service]
+Type=oneshot
+User=upwork
+WorkingDirectory=/opt/upwork
+# System Python on purpose: the check uses only the standard library and must work when the venv is broken.
+ExecStart=/usr/bin/python3 /opt/upwork/ops/scraper/healthcheck.py
+# Exit code 1 means "unhealthy" and is expected, not a unit failure.
+SuccessExitStatus=1

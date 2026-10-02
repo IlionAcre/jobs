@@ -1,28 +1,82 @@
 # Running the scraper pipeline on this Windows PC
 
-- Scheduled task **UpworkScraper** (at logon, 1 minute delay) runs `ops/scraper/start_scraper.cmd`.
-- The script waits for Redis (`UpworkRedis` task, see `ops/redis/README.md`), then runs
-  `python main.py scraper up` and restarts it if it ever exits.
-- `up` starts one process per role (scheduler, fetcher, dispatcher, dashboard, watchdog, and the bot if
-  enabled) and restarts any that exits. If `up` itself is killed, the roles notice within a few seconds and
-  exit, so nothing is left orphaned.
-- Status page: http://127.0.0.1:8787 . Health alerts go to your Telegram chat.
-- Log: `logs/scraper.log` (rotated to `scraper.log.1` at ~20 MB on start).
+Three scheduled tasks (all run as the logged-in user, so they start at logon, not at boot):
+
+| task | what it runs | when |
+|---|---|---|
+| **UpworkScraper** | `ops/scraper/start_scraper.cmd` → `python main.py scraper up --log-file logs\scraper.log` | at logon, and every 5 minutes (ignored while it is already running) |
+| **UpworkScraperCheck** | `ops/scraper/healthcheck.py` (outside check) | every 5 minutes |
+| **UpworkBackup** | `python main.py scraper backup` | daily at 03:30 (or as soon as possible if the PC was off) |
+
+Redis comes from the `UpworkRedis` task (`ops/redis/README.md`). For Linux see `ops/linux/install.md`.
+
+## What runs
+
+`up` starts one process per role (scheduler, fetcher, dispatcher, dashboard, watchdog, and the bot if
+`bot.enabled`) and restarts any that exits. If `up` itself is killed, the roles notice within a few seconds
+and exit, and the start script launches it again about 15 seconds later.
 
 ```
-schtasks /Run /TN UpworkScraper          # start now
-schtasks /End /TN UpworkScraper          # stop (then check `python main.py scraper status`)
-schtasks /Delete /TN UpworkScraper /F    # remove the autostart
-python main.py scraper status
+python main.py scraper status                    # roles, token, queues, problems (exit 1 on a critical one)
+python main.py scraper shadow-report --hours 24  # compared with monitor_uw.py; exit 1 if an alert was missed
+schtasks /Run /TN UpworkScraper                  # start now
+schtasks /End /TN UpworkScraper                  # stop everything
 ```
 
-Recreate the task:
+Status page: http://127.0.0.1:8787 . Logs: `logs/scraper.log` (rotated at start-up, see `log:` in
+`app/config/scraper.yaml`) and `logs/start_scraper.log` (the start script's own lines).
+
+## Who tells you when something is wrong
+
+1. **Watchdog** (a role of the pipeline): a Telegram message when a problem opens, a reminder every hour
+   while it stays open, one when it resolves, and a summary once a day (`alerts.daily_summary_at`). A day
+   without the summary means the alerting itself is broken.
+2. **Outside check** (`healthcheck.py`): independent of the pipeline and of the virtual environment's
+   packages. It alerts when the pipeline does not answer, or answers but has no watchdog, for two checks in a
+   row (about 10 minutes), and again when it recovers. It cannot help when the PC itself is off.
+
+Both send to `alerts.chat_id` (scraper.yaml), else `ALERTS_CHAT_ID` (.env), else `TELEGRAM_CHAT_ID`.
+To use a private channel: create it, add the bot as an administrator (the bot then messages you the
+channel's id), put that id in `.env` as `ALERTS_CHAT_ID=-100…`, and restart the pipeline.
+
+## Backups
+
+`python main.py scraper backup` writes `upwork-<date>-<time>.dump` to `backup.dir` (default: a
+`upwork-backups` folder next to the repository), checks that the dump is readable, and deletes dumps older
+than `backup.keep_days` (never the newest three). Set `backup.copy_to` to a folder that a cloud-drive client
+syncs to keep a copy off this disk. A missing or overdue backup shows up as a health warning.
+
+Restore into an empty database (needs a user allowed to create it; the app's user is not):
 ```
-schtasks /Create /TN "UpworkScraper" /TR "<repo>\ops\scraper\start_scraper.cmd" /SC ONLOGON /DELAY 0001:00 /RL LIMITED /F
+createdb -U postgres upwork_restored
+pg_restore --no-owner -U postgres -d upwork_restored upwork-<date>-<time>.dump
 ```
 
-The pipeline is in **shadow mode** (`dispatcher.mode: shadow` in `app/config/scraper.yaml`): it records what
-it would have sent but sends nothing. Compare with the legacy monitor with
-`python main.py scraper shadow-report --hours 24`, then switch to `live` and stop `monitor_uw.py`.
+## Opening the status page from another device
 
-On Linux the same thing is a systemd unit running `python main.py scraper up` (or one unit per role).
+The page speaks plain HTTP and must never face the open internet. Use a private network:
+
+1. Install Tailscale on this PC and on the phone/laptop, signed in to the same account.
+2. Put a password in `.env`: `DASHBOARD_PASSWORD=…` (any user name works at the prompt).
+3. In `app/config/scraper.yaml` set `dashboard.host` to this PC's Tailscale address (`tailscale ip -4`).
+   The page also keeps answering on 127.0.0.1 for the outside check. Without a password the pipeline
+   refuses to bind to anything but localhost.
+4. Restart the pipeline and open `http://<tailscale address>:8787`.
+
+## Recreating the tasks (PowerShell)
+
+```powershell
+$root = "<repo>"
+$s = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+$every5 = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Days 3650)
+$logon = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME"
+
+Register-ScheduledTask -TaskName UpworkScraper -Trigger @($logon, $every5) -Settings $s -Force `
+  -Action (New-ScheduledTaskAction -Execute cmd.exe -Argument "/c `"$root\ops\scraper\start_scraper.cmd`"")
+Register-ScheduledTask -TaskName UpworkScraperCheck -Trigger @($logon, $every5) -Settings $s -Force `
+  -Action (New-ScheduledTaskAction -Execute "$root\.venv\Scripts\pythonw.exe" -Argument "`"$root\ops\scraper\healthcheck.py`"" -WorkingDirectory $root)
+Register-ScheduledTask -TaskName UpworkBackup -Trigger (New-ScheduledTaskTrigger -Daily -At 03:30) -Settings $s -Force `
+  -Action (New-ScheduledTaskAction -Execute "$root\.venv\Scripts\pythonw.exe" -Argument "`"$root\main.py`" scraper backup" -WorkingDirectory $root)
+```
+
+Do not create these with `schtasks /Create`: it gives tasks a 72-hour execution limit.

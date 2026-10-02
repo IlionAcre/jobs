@@ -24,7 +24,8 @@ python main.py scraper searches               # searches and who is subscribed
 python main.py scraper filter 1 --include python scraping scraper scrape   # whole words; drops "alloy scrap"
 python main.py scraper filter 1 --clear
 python main.py scraper mint --all             # try every way of getting a token
-python main.py scraper shadow-report --hours 24   # compare with the legacy monitor
+python main.py scraper shadow-report --hours 24   # compare with the legacy monitor; exit 1 if an alert was missed
+python main.py scraper backup                 # dump the database now (the UpworkBackup task does this daily)
 python main.py scraper up                     # run everything (the UpworkScraper logon task does this)
 ```
 
@@ -45,25 +46,31 @@ All three use the same rules (`health.py::evaluate`), so they cannot disagree.
 | Redis / Postgres unreachable | |
 | token from a fallback minter (warning) | the primary minter is being challenged: time to bump the Chrome profile |
 | token not refreshed, polling paused, queue backlog (warnings) | |
+| no database backup, or the newest is older than `backup.max_age_hours` (warning) | |
 
 - **Watchdog**: one Telegram message when a problem opens, a reminder every `alerts.repeat_after_minutes`,
-  one when it resolves. Goes to `alerts.chat_id`, or `TELEGRAM_CHAT_ID` if that is null.
-  It says nothing while all is well, so silence means "working" only while the watchdog itself runs —
-  the dashboard and `scraper status` show whether it does.
-- **Dashboard**: `http://127.0.0.1:8787`. No login, localhost only, shows no secrets.
-  `/healthz` returns 503 while a critical problem is open (point an uptime monitor at it).
+  one when it resolves, and a summary once a day at `alerts.daily_summary_at`. Goes to `alerts.chat_id`,
+  else `ALERTS_CHAT_ID` from `.env`, else `TELEGRAM_CHAT_ID`. A day without the summary means the alerting
+  itself is broken.
+- **Outside check** (`ops/scraper/healthcheck.py`, run by the OS scheduler): alerts when the pipeline does
+  not answer or has no watchdog. It is what covers the watchdog being dead.
+- **Dashboard**: `http://127.0.0.1:8787`, shows no secrets. `/healthz` returns 503 while a critical problem
+  is open. Set `DASHBOARD_PASSWORD` to require a password; binding to another address requires one
+  (see `ops/scraper/README.md` for remote access over Tailscale).
 - **`scraper status`**: the same in the terminal; exit code 1 on a critical problem.
 
 ## The Telegram bot
 
-Off by default (`bot.enabled: false`). Run it with `python main.py scraper bot` or set `bot.enabled: true`
-so `up` starts it. Commands: `/search <words>`, `/searches`, `/filter <id> include: a, b; exclude: c`,
-`/filter <id> clear`, `/remove <id>`, `/pause`, `/resume`, `/status`, `/help`.
+`bot.enabled: true` makes `up` start it (or run `python main.py scraper bot`). Commands: `/search <words>`,
+`/searches`, `/filter <id> include: a, b; exclude: c`, `/filter <id> clear`, `/remove <id>`, `/pause`,
+`/resume`, `/status`, `/help`.
 
-Access: `bot.access: allowlist` admits `bot.allowed_chat_ids` plus `TELEGRAM_CHAT_ID`; anyone else is told
-the bot is private and shown their chat id (so you can add it). `open` admits everyone. Each chat may watch
-`bot.max_searches_per_chat` searches. There is no portal or payment check yet; when there is, add an
-`AccessPolicy` in `bot.py` — nothing else changes. The old bot (now `legacy/app/notify/bot_uw.py`)
+Access: `bot.access: allowlist` admits `TELEGRAM_CHAT_ID` (the owner), `bot.allowed_chat_ids`, and the chats
+the owner admitted from Telegram with `/allow <chat id> <name>` (`/deny <chat id>`, `/allowed`). Anyone else
+is told the bot is private and shown their chat id, and the owner is told once that they tried. `open`
+admits everyone. Each chat may watch `bot.max_searches_per_chat` searches and send
+`bot.commands_per_minute` commands. Payments will replace the allowlist with another `AccessPolicy`
+(`docs/adr/0003-product-layer.md`); nothing else changes. The old bot (now `legacy/app/notify/bot_uw.py`)
 was a different flow that required a portal link; it is retired.
 
 ## Changing things

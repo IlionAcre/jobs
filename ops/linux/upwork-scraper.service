@@ -1,0 +1,22 @@
+[Unit]
+Description=Upwork scraper pipeline (scheduler, fetcher, dispatcher, watchdog, dashboard, bot)
+After=network-online.target postgresql.service redis-server.service
+Wants=network-online.target
+# Redis holds the queue, the token and the rate limits; without it the roles only retry.
+Requires=redis-server.service
+
+[Service]
+Type=simple
+User=upwork
+WorkingDirectory=/opt/upwork
+# Secrets (.env is also read by the application itself; listing it here lets systemd pass it to ExecStart)
+EnvironmentFile=/opt/upwork/.env
+ExecStart=/opt/upwork/.venv/bin/python -u main.py scraper up --log-file /opt/upwork/logs/scraper.log
+Restart=always
+RestartSec=15
+# `up` stops its roles on SIGINT; give them a moment, then systemd kills whatever is left in the cgroup.
+KillSignal=SIGINT
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

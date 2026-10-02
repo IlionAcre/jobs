@@ -1,5 +1,7 @@
 # Upwork Monitor Project Assessment Report
 
+> **Superseded (2026-10-01).** This describes the old browser-based worker, scheduler and bot, now in `legacy/`. The current design is `docs/adr/0002-scraper-pipeline.md`; the product layer is `docs/adr/0003-product-layer.md`.
+
 ## Scope Reviewed
 
 - Legacy/local scripts: `monitor_uw.py`, `monitor_uw_cm.py`
