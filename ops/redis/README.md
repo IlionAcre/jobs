@@ -10,19 +10,29 @@ Everything durable (searches, jobs, deliveries) lives in Postgres; Redis can be 
 - Container `upwork-redis`: `docker.io/library/redis:7-alpine` (Redis 7.4.11), published on
   `127.0.0.1:6379` only, data on the named volume `upwork-redis-data`,
   `redis-server --appendonly yes --appendfsync everysec` (survives restarts).
-- Scheduled task **UpworkRedis** (at logon) runs `ops/redis/start_redis.cmd`, which starts the machine and
-  the container. Log: `ops/redis/start_redis.log`.
+- Scheduled task **UpworkRedis** (at logon and every 5 minutes) runs `ops/redis/start_redis.cmd`: if Redis
+  does not answer it starts the machine and the container, otherwise it exits at once.
+  Log: `ops/redis/start_redis.log` (written only when something had to be started).
 
 ## Recreate from scratch
 ```
 podman machine init
 podman machine start
 podman volume create upwork-redis-data
-podman run -d --name upwork-redis --restart=always -p 127.0.0.1:6379:6379 -v upwork-redis-data:/data docker.io/library/redis:7-alpine redis-server --appendonly yes --appendfsync everysec
-schtasks /Create /TN "UpworkRedis" /TR "<repo>\ops\redis\start_redis.cmd" /SC ONLOGON /RL LIMITED /F
+podman run -d --name upwork-redis --restart=always --cgroups=disabled -p 127.0.0.1:6379:6379 -v upwork-redis-data:/data docker.io/library/redis:7-alpine redis-server --appendonly yes --appendfsync everysec
 ```
+Register the task with PowerShell (at logon and every 5 minutes), the same way as the tasks in
+`ops/scraper/README.md`, with `cmd.exe /c "<repo>\ops\redis\start_redis.cmd"` as the action.
 
 ## Things that are not obvious
+- **The VM can stop without a reboot.** On 2026-10-02 at 08:45 the Microsoft Store updated WSL (to 3.0.1,
+  kernel 6.18), which shut the VM down. The task only ran at logon then, so Redis stayed down for
+  3 h 40 min. The task now repeats every 5 minutes. Verified: VM stopped by hand, Redis back 31 s after
+  the task ran.
+- **`--cgroups=disabled` is required since that WSL update.** Without it the container fails to start with
+  `crun: controller 'pids' is not available under /sys/fs/cgroup/non-systemd/...`: the rootless user no
+  longer gets any cgroup controller (`podman info` lists none) and Podman's default pids limit needs one.
+  Redis needs no resource limits here; the VM's memory cap is the limit.
 - `--restart=always` alone does **not** bring the container back after the machine restarts: the machine's
   `podman-restart.service` is disabled and can't be enabled over `podman machine ssh` ("Access denied").
   The logon task starts the container explicitly instead. Verified: from a stopped machine, Redis is back
