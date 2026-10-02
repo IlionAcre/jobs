@@ -84,7 +84,7 @@ class Dispatcher:
                 continue  # this subscription already has this job (e.g. the event was redelivered)
             counts[status] += 1
             if live:
-                self._send(sub.chat_id, "🔔 New job\n\n" + text)
+                self._send(sub.chat_id, f"🔔 {self._cfg.dispatcher.live_tag}New job\n\n" + text)
             elif self._cfg.dispatcher.admin_chat_id is not None:
                 self._send(self._cfg.dispatcher.admin_chat_id, f"🧪 [shadow → chat {sub.chat_id}]\n\n" + text)
             log.info("job_delivered" if live else "job_would_deliver",

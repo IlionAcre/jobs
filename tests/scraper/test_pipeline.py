@@ -295,6 +295,16 @@ def test_live_dispatch_fans_out_filters_and_never_repeats(rig, cfg):
     assert len(rig.sent) == 2
 
 
+def test_live_tag_marks_alerts_from_this_pipeline(rig, cfg):
+    tagged = cfg.model_copy(update={"dispatcher": cfg.dispatcher.model_copy(update={"mode": "live", "live_tag": "[new] "})})
+    d = Dispatcher(rig.store, rig.queue, tagged, send=lambda chat, text: rig.sent.append((chat, text)))
+    s = rig.store.upsert_search("python")
+    rig.store.subscribe(111, s)
+    rig.store.upsert_jobs([job("~x")])
+    d.dispatch(s, "~x")
+    assert rig.sent[0][1].startswith("🔔 [new] New job")
+
+
 def test_shadow_mode_sends_nothing_to_subscribers(rig, cfg):
     s = rig.store.upsert_search("python")
     rig.store.subscribe(111, s)

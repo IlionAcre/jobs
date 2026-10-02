@@ -102,6 +102,7 @@ class RateLimitConfig(_Model):
 class DispatcherConfig(_Model):
     mode: Literal["shadow", "live"]
     admin_chat_id: Optional[int] = None
+    live_tag: str = ""  # put in front of live alerts, e.g. "[new] " while the legacy monitor also sends
     show_description_chars: int = Field(default=300, ge=0)
 
 
