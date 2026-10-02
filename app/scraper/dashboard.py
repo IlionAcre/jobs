@@ -5,13 +5,19 @@ Read-only admin dashboard: one HTML page, a JSON endpoint and a health check.
   GET /api/status  the same data as JSON
   GET /healthz     200 when no critical problem is open, 503 otherwise (for uptime monitors)
 
-Built on the standard library so the pipeline needs no web framework. There is no login: it binds to
-127.0.0.1 by default and exposes no secrets (the token value is never shown, chat ids are masked).
+Built on the standard library so the pipeline needs no web framework. It binds to 127.0.0.1 by default and
+exposes no secrets (the token value is never shown, chat ids are masked). With a password set
+(`dashboard.password_env`) the page and the API ask for it; binding to any other address requires one.
+It speaks plain HTTP, so reach it over a private network (Tailscale), never the open internet.
 """
 from __future__ import annotations
 
+import base64
+import hmac
+import ipaddress
 import json
 import logging
+import os
 import threading
 import time
 from datetime import datetime, timezone
@@ -168,8 +174,31 @@ def current_status(runtime) -> Dict[str, Any]:
     return build_status(snap, evaluate(snap, runtime.config), runtime.config, activity, recent)
 
 
+def is_loopback(host: str) -> bool:
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return host.lower() == "localhost"
+
+
+def check_basic_auth(header: Optional[str], password: str) -> bool:
+    """HTTP Basic: any user name, the configured password. Compared in constant time."""
+    if not header or not header.lower().startswith("basic "):
+        return False
+    try:
+        decoded = base64.b64decode(header[6:].strip(), validate=True).decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        return False
+    _, _, given = decoded.partition(":")
+    return hmac.compare_digest(given.encode("utf-8"), password.encode("utf-8"))
+
+
 def serve(runtime, stop: Callable[[], bool] = lambda: False, on_loop: Callable[[], None] = lambda: None) -> None:
     cfg = runtime.config.dashboard
+    password = os.environ.get(cfg.password_env, "").strip() if cfg.password_env else ""
+    if not password and not is_loopback(cfg.host):
+        raise SystemExit(f"dashboard.host is {cfg.host!r}, which other machines can reach: set {cfg.password_env} in .env "
+                         "(the page has no other protection), or bind to 127.0.0.1")
 
     class Handler(BaseHTTPRequestHandler):
         def _send(self, code: int, body: bytes, ctype: str) -> None:
@@ -181,16 +210,30 @@ def serve(runtime, stop: Callable[[], bool] = lambda: False, on_loop: Callable[[
             self.end_headers()
             self.wfile.write(body)
 
+        def _authorized(self) -> bool:
+            if not password:
+                return True
+            return check_basic_auth(self.headers.get("Authorization"), password)
+
         def do_GET(self) -> None:  # noqa: N802
             try:
                 path = self.path.split("?", 1)[0]
+                if path != "/healthz" and not self._authorized():
+                    self.send_response(401)
+                    self.send_header("WWW-Authenticate", 'Basic realm="scraper", charset="UTF-8"')
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
                 if path == "/":
                     self._send(200, render_html(current_status(runtime)).encode("utf-8"), "text/html; charset=utf-8")
                 elif path == "/api/status":
                     self._send(200, json.dumps(current_status(runtime), default=str).encode("utf-8"), "application/json")
                 elif path == "/healthz":
                     status = current_status(runtime)
-                    self._send(200 if status["ok"] else 503, json.dumps({"ok": status["ok"], "problems": len(status["problems"])}).encode(), "application/json")
+                    watchdog = any(r["role"] == "watchdog" for r in status["roles"])  # who will tell a human?
+                    self._send(200 if status["ok"] else 503,
+                               json.dumps({"ok": status["ok"], "problems": len(status["problems"]), "watchdog": watchdog}).encode(),
+                               "application/json")
                 else:
                     self._send(404, b"not found", "text/plain")
             except Exception:  # noqa: BLE001
@@ -200,12 +243,16 @@ def serve(runtime, stop: Callable[[], bool] = lambda: False, on_loop: Callable[[
         def log_message(self, *args) -> None:  # keep access lines out of the JSON log
             return
 
-    server = ThreadingHTTPServer((cfg.host, cfg.port), Handler)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    log.info("dashboard_ready", extra={"url": f"http://{cfg.host}:{cfg.port}/"})
+    # Always answer on localhost too, so the local health check works whatever address the page is on.
+    hosts = [cfg.host] if is_loopback(cfg.host) or cfg.host == "0.0.0.0" else [cfg.host, "127.0.0.1"]
+    servers = [ThreadingHTTPServer((host, cfg.port), Handler) for host in hosts]
+    for server in servers:
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+    log.info("dashboard_ready", extra={"urls": [f"http://{h}:{cfg.port}/" for h in hosts], "password": bool(password)})
     try:
         while not stop():
             on_loop()
             time.sleep(2)
     finally:
-        server.shutdown()
+        for server in servers:
+            server.shutdown()

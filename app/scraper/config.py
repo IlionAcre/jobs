@@ -114,11 +114,16 @@ class AlertsConfig(_Model):
     failing_search_after: int = Field(default=3, ge=1)  # consecutive failed polls
     queue_backlog_max: int = Field(default=200, ge=1)
     repeat_after_minutes: float = Field(default=60, gt=0)  # remind about a problem that is still open
+    # Local time ("HH:MM") of the once-a-day summary; null = none. It also proves the alerting is alive.
+    daily_summary_at: Optional[str] = Field(default="09:00", pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
 
 
 class DashboardConfig(_Model):
     host: str = "127.0.0.1"  # read-only status page; keep it on localhost unless you add auth in front
     port: int = Field(default=8787, ge=1, le=65535)
+    # Name of the environment variable holding the page's password (HTTP Basic, any user name).
+    # Required when `host` is not a loopback address; /healthz never asks for it.
+    password_env: str = "DASHBOARD_PASSWORD"
 
 
 class BotConfig(_Model):
@@ -128,6 +133,7 @@ class BotConfig(_Model):
     access: Literal["allowlist", "open"] = "allowlist"
     allowed_chat_ids: List[int] = Field(default_factory=list)
     max_searches_per_chat: int = Field(default=5, ge=1)
+    commands_per_minute: int = Field(default=20, ge=1)  # per chat; more than this is answered with "slow down"
 
 
 class ScraperConfig(_Model):

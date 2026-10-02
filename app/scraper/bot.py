@@ -16,7 +16,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from typing import Callable, Iterable, List, Optional, Protocol, Tuple
+import time
+from collections import deque
+from typing import Callable, Deque, Dict, Iterable, List, Optional, Protocol, Tuple
 
 from app.scraper.config import ScraperConfig
 from app.scraper.store import ChatSubscription, ScraperStore
@@ -56,10 +58,22 @@ class AllowlistPolicy:
         return int(chat_id) in self._chat_ids
 
 
-def build_policy(config: ScraperConfig, owner_chat_id: Optional[int]) -> AccessPolicy:
+class StoredAllowlistPolicy:
+    """The config's allowlist plus the chats the owner admitted with /allow (kept in Postgres)."""
+
+    def __init__(self, chat_ids: Iterable[int], store: ScraperStore) -> None:
+        self._static = AllowlistPolicy(chat_ids)
+        self._store = store
+
+    def allowed(self, chat_id: int) -> bool:
+        return self._static.allowed(chat_id) or self._store.chat_is_allowed(chat_id)
+
+
+def build_policy(config: ScraperConfig, owner_chat_id: Optional[int], store: Optional[ScraperStore] = None) -> AccessPolicy:
     if config.bot.access == "open":
         return OpenPolicy()
-    return AllowlistPolicy([*config.bot.allowed_chat_ids, *([owner_chat_id] if owner_chat_id is not None else [])])
+    static = [*config.bot.allowed_chat_ids, *([owner_chat_id] if owner_chat_id is not None else [])]
+    return StoredAllowlistPolicy(static, store) if store is not None else AllowlistPolicy(static)
 
 
 def compile_query(raw: str) -> str:
@@ -98,14 +112,45 @@ def _describe(sub: ChatSubscription) -> str:
     return line
 
 
+OWNER_HELP = (
+    "\n\nOwner only:\n"
+    "/allow 123456789 name — let that chat use the bot\n"
+    "/deny 123456789 — take it away (their searches are paused)\n"
+    "/allowed — who has access"
+)
+
+
 class BotCore:
-    def __init__(self, store: ScraperStore, config: ScraperConfig, policy: AccessPolicy) -> None:
+    def __init__(self, store: ScraperStore, config: ScraperConfig, policy: AccessPolicy, *,
+                 owner_chat_id: Optional[int] = None, notify_owner: Optional[Callable[[str], None]] = None,
+                 clock: Callable[[], float] = time.monotonic) -> None:
         self._store = store
         self._cfg = config
         self._policy = policy
+        self._owner = owner_chat_id
+        self._notify_owner = notify_owner  # tells the owner what they should know (e.g. a stranger knocked)
+        self._clock = clock
+        self._recent: Dict[int, Deque[float]] = {}  # chat -> times of its last commands
+        self._announced: set = set()  # strangers the owner was already told about
 
-    def handle(self, chat_id: int, text: str) -> Optional[str]:
-        """Reply to one message, or None to stay silent (not a command)."""
+    def _too_fast(self, chat_id: int) -> bool:
+        now = self._clock()
+        times = self._recent.setdefault(chat_id, deque())
+        while times and now - times[0] > 60:
+            times.popleft()
+        times.append(now)
+        return len(times) > self._cfg.bot.commands_per_minute
+
+    def _tell_owner(self, text: str) -> None:
+        if self._notify_owner is None:
+            return
+        try:
+            self._notify_owner(text)
+        except Exception:  # noqa: BLE001
+            log.exception("bot_notify_owner_failed")
+
+    def handle(self, chat_id: int, text: str, who: str = "") -> Optional[str]:
+        """Reply to one message, or None to stay silent (not a command). `who` describes the sender."""
         text = (text or "").strip()
         if not text.startswith("/"):
             return None
@@ -113,7 +158,15 @@ class BotCore:
         command = head[1:].split("@", 1)[0].lower()  # "/search@MyBot" -> "search"
         arg = arg.strip()
 
+        if self._too_fast(chat_id):
+            return "Slow down a little — try again in a minute."
+
         if not self._policy.allowed(chat_id):
+            if chat_id not in self._announced:
+                self._announced.add(chat_id)
+                log.info("bot_access_refused", extra={"chat_id": chat_id})
+                self._tell_owner(f"🔑 Someone tried the bot: {who or 'unknown'} (chat {chat_id}).\n"
+                                 f"To let them in, send me: /allow {chat_id}")
             return ("This bot is private for now. Ask the owner to allow this chat.\n"
                     f"Chat id: {chat_id}")
 
@@ -124,6 +177,8 @@ class BotCore:
             "filter": self._filter, "remove": self._remove,
             "pause": self._pause, "resume": self._resume, "status": self._status,
         }.get(command)
+        if handler is None and self._owner is not None and chat_id == self._owner:
+            handler = {"allow": self._allow, "deny": self._deny, "allowed": self._allowed}.get(command)
         if handler is None:
             return "I don't know that command.\n\n" + HELP
         try:
@@ -139,7 +194,44 @@ class BotCore:
                 if self._cfg.dispatcher.mode != "live" else "")
 
     def _help(self, chat_id: int, arg: str) -> str:
-        return HELP + self._shadow_note()
+        return HELP + (OWNER_HELP if self._owner is not None and chat_id == self._owner else "") + self._shadow_note()
+
+    # --- owner commands --------------------------------------------------------------------------
+
+    @staticmethod
+    def _chat_arg(arg: str) -> Tuple[Optional[int], str]:
+        token, _, rest = arg.partition(" ")
+        return (int(token), rest.strip()) if token.lstrip("-").isdigit() else (None, "")
+
+    def _allow(self, chat_id: int, arg: str) -> str:
+        target, note = self._chat_arg(arg)
+        if target is None:
+            return "Which chat? /allow 123456789 name"
+        new = self._store.allow_chat(target, note[:80])
+        self._announced.discard(target)
+        return f"Chat {target} can now use the bot." if new else f"Chat {target} was already allowed."
+
+    def _deny(self, chat_id: int, arg: str) -> str:
+        target, _ = self._chat_arg(arg)
+        if target is None:
+            return "Which chat? /deny 123456789"
+        if target == self._owner:
+            return "That's you."
+        removed = self._store.deny_chat(target)
+        if not removed:
+            in_config = target in set(self._cfg.bot.allowed_chat_ids)
+            return f"Chat {target} was not on the list" + (" (it is allowed in the config file)." if in_config else ".")
+        paused = self._store.set_chat_enabled(target, False)  # no alerts for a chat that can no longer manage them
+        return f"Chat {target} can no longer use the bot; {paused} search(es) paused."
+
+    def _allowed(self, chat_id: int, arg: str) -> str:
+        rows = self._store.allowed_chats()
+        static = sorted(set(self._cfg.bot.allowed_chat_ids))
+        lines = [f"{r['chat_id']}  {r['note'] or ''}".rstrip() for r in rows]
+        text = "Allowed with /allow:\n" + ("\n".join(lines) if lines else "nobody yet")
+        if static:
+            text += "\nIn the config file: " + ", ".join(str(c) for c in static)
+        return text + "\nYou are always allowed."
 
     def _search(self, chat_id: int, arg: str) -> str:
         query = compile_query(arg)
@@ -220,19 +312,31 @@ class BotCore:
 
 
 async def run_bot(core: BotCore, token: str, *, stop: Callable[[], bool] = lambda: False,
-                  on_loop: Callable[[], None] = lambda: None) -> None:
+                  on_loop: Callable[[], None] = lambda: None, owner_chat_id: Optional[int] = None) -> None:
     from aiogram import Bot, Dispatcher, F
-    from aiogram.types import Message
+    from aiogram.types import ChatMemberUpdated, Message
 
     bot = Bot(token=token)
     dp = Dispatcher()
 
     @dp.message(F.text)
     async def on_text(msg: Message) -> None:
+        user = msg.from_user
+        who = " ".join(x for x in [user.full_name if user else "", f"@{user.username}" if user and user.username else ""] if x)
         # The store is synchronous; keep the event loop free while it talks to Postgres.
-        reply = await asyncio.to_thread(core.handle, int(msg.chat.id), msg.text or "")
+        reply = await asyncio.to_thread(core.handle, int(msg.chat.id), msg.text or "", who)
         if reply:
             await msg.answer(reply, disable_web_page_preview=True)
+
+    @dp.my_chat_member()
+    async def on_membership(update: ChatMemberUpdated) -> None:
+        # The bot was added to (or removed from) a group or channel. The owner needs that chat's id to
+        # point alerts at it, and Telegram shows it nowhere else.
+        chat = update.chat
+        status = getattr(update.new_chat_member.status, "value", str(update.new_chat_member.status))
+        log.info("bot_membership_changed", extra={"chat_id": chat.id, "chat_type": str(chat.type), "status": status})
+        if chat.type != "private" and owner_chat_id is not None:
+            await bot.send_message(owner_chat_id, f"I am now '{status}' in the {chat.type} \"{chat.title}\".\nIts chat id: {chat.id}")
 
     async def housekeeping() -> None:
         while not stop():
@@ -246,7 +350,7 @@ async def run_bot(core: BotCore, token: str, *, stop: Callable[[], bool] = lambd
     log.info("bot_ready", extra={"username": me.username})
     keeper = asyncio.create_task(housekeeping())
     try:
-        await dp.start_polling(bot, handle_signals=False)
+        await dp.start_polling(bot, handle_signals=False, allowed_updates=["message", "my_chat_member"])
     finally:
         keeper.cancel()
         await bot.session.close()

@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Callable, Dict, List
+from datetime import datetime
+from typing import Callable, Dict, List, Optional
 
 from app.scraper.config import ScraperConfig
 from app.scraper.health import CRITICAL, HealthSnapshot, Problem, evaluate
@@ -23,15 +24,40 @@ class Watchdog:
     One message when a problem opens, a reminder every `repeat_after_minutes` while it stays open, and one
     message when it resolves. Nothing is sent while everything is fine, so silence means "working" only as
     long as the watchdog itself is running (the dashboard and `scraper status` show whether it is).
+    That is what the daily summary is for: one message a day at `alerts.daily_summary_at`, so a day
+    without it means the alerting itself is broken.
     """
 
     def __init__(self, collect: Callable[[], HealthSnapshot], config: ScraperConfig, send: Send, *,
-                 clock: Callable[[], float] = time.time) -> None:
+                 clock: Callable[[], float] = time.time,
+                 summary: Optional[Callable[[], str]] = None,
+                 load_state: Callable[[], Dict] = dict, save_state: Callable[[Dict], None] = lambda state: None) -> None:
         self._collect = collect
         self._cfg = config
         self._send = send
         self._clock = clock
+        self._summary = summary
+        self._load_state = load_state  # survives restarts, so a restart does not repeat today's summary
+        self._save_state = save_state
         self._open: Dict[str, Dict] = {}  # key -> {"problem", "since", "notified_at"}
+
+    def maybe_daily_summary(self, now_local: Optional[datetime] = None) -> Optional[str]:
+        """Send the summary once per day, at or after the configured local time. Returns the text if sent."""
+        at = self._cfg.alerts.daily_summary_at
+        if not at or self._summary is None:
+            return None
+        now_local = now_local or datetime.now()
+        today = now_local.strftime("%Y-%m-%d")
+        if now_local.strftime("%H:%M") < at:
+            return None
+        state = self._load_state() or {}
+        if state.get("daily_summary_sent") == today:
+            return None
+        text = self._summary()
+        self._send(text)  # if this raises, the date is not saved and the next tick retries
+        self._save_state({**state, "daily_summary_sent": today})
+        log.info("daily_summary_sent", extra={"day": today})
+        return text
 
     def tick(self) -> List[str]:
         """One check. Returns the messages sent (for tests and logs)."""
@@ -89,4 +115,8 @@ class Watchdog:
                     self.tick()
                 except Exception:  # noqa: BLE001
                     log.exception("watchdog_tick_failed")
+                try:
+                    self.maybe_daily_summary()
+                except Exception:  # noqa: BLE001
+                    log.exception("daily_summary_failed")
             time.sleep(2)

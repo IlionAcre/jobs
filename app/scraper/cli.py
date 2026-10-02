@@ -89,6 +89,31 @@ def _owner_chat_id() -> Optional[int]:
     return int(raw) if raw.lstrip("-").isdigit() else None
 
 
+def _alerts_chat_id(config: ScraperConfig) -> Optional[int]:
+    """Where health alerts go: alerts.chat_id, else ALERTS_CHAT_ID (.env), else the owner's chat."""
+    if config.alerts.chat_id is not None:
+        return config.alerts.chat_id
+    raw = os.environ.get("ALERTS_CHAT_ID", "").strip()
+    return int(raw) if raw.lstrip("-").isdigit() else _owner_chat_id()
+
+
+def _state_file(name: str):
+    """A tiny JSON file under logs/ for state that must survive a restart. Returns (load, save)."""
+    path = REPO_ROOT / "logs" / name
+
+    def load() -> dict:
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+
+    def save(state: dict) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(state), encoding="utf-8")
+
+    return load, save
+
+
 def _telegram_token(why: str) -> str:
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
     if not token:
@@ -124,14 +149,25 @@ def _run_role(role: str, runtime, stop: Callable[[], bool] = lambda: False) -> N
         Dispatcher(runtime.store, runtime.queue, cfg, _sender(cfg)).run_forever(name, stop, beat)
     elif role == "watchdog":
         from app.notify.telegram import TelegramNotifier
-        from app.scraper.health import collect
+        from app.scraper.health import collect, daily_summary, evaluate
         from app.scraper.pipeline.watchdog import Watchdog
 
-        chat_id = cfg.alerts.chat_id if cfg.alerts.chat_id is not None else _owner_chat_id()
+        chat_id = _alerts_chat_id(cfg)
         if chat_id is None:
-            raise SystemExit("watchdog needs alerts.chat_id in scraper.yaml or TELEGRAM_CHAT_ID in .env")
+            raise SystemExit("watchdog needs alerts.chat_id in scraper.yaml, or ALERTS_CHAT_ID / TELEGRAM_CHAT_ID in .env")
         notifier = TelegramNotifier(token=_telegram_token("the watchdog"))
-        Watchdog(lambda: collect(runtime), cfg, lambda text: notifier.send(chat_id, text)).run_forever(stop, beat)
+
+        def summary() -> str:
+            snap = collect(runtime)
+            try:
+                activity = runtime.store.activity(24)
+            except Exception:  # noqa: BLE001  (Postgres down: the summary says so)
+                activity = None
+            return daily_summary(snap, evaluate(snap, cfg), activity, cfg)
+
+        load, save = _state_file("watchdog_state.json")
+        Watchdog(lambda: collect(runtime), cfg, lambda text: notifier.send(chat_id, text),
+                 summary=summary, load_state=load, save_state=save).run_forever(stop, beat)
     elif role == "dashboard":
         from app.scraper.dashboard import serve
         serve(runtime, stop, beat)
@@ -140,8 +176,14 @@ def _run_role(role: str, runtime, stop: Callable[[], bool] = lambda: False) -> N
 
         from app.scraper.bot import BotCore, build_policy, run_bot
 
-        core = BotCore(runtime.store, cfg, build_policy(cfg, _owner_chat_id()))
-        asyncio.run(run_bot(core, _telegram_token("the bot"), stop=stop, on_loop=beat))
+        from app.notify.telegram import TelegramNotifier
+
+        owner, token = _owner_chat_id(), _telegram_token("the bot")
+        alerts_chat = _alerts_chat_id(cfg)
+        notifier = TelegramNotifier(token=token)
+        core = BotCore(runtime.store, cfg, build_policy(cfg, owner, runtime.store), owner_chat_id=owner,
+                       notify_owner=(lambda text: notifier.send(alerts_chat, text)) if alerts_chat is not None else None)
+        asyncio.run(run_bot(core, token, stop=stop, on_loop=beat, owner_chat_id=owner))
     else:
         raise SystemExit(f"unknown role {role!r}")
 
@@ -396,12 +438,16 @@ def cmd_shadow_report(args, config: ScraperConfig) -> int:
     from app.store.db import build_db_dsn_from_env, make_engine
 
     r = shadow_report(make_engine(build_db_dsn_from_env()), query_norm=normalize_query(args.query), hours=args.hours)
+    code = 1 if r["missed"] else 0  # non-zero when the legacy monitor alerted on something this pipeline did not
     if args.json:
         print(json.dumps(r, indent=2, default=str))
-        return 0
+        return code
     lead, lag = r["new_pipeline_lead_over_legacy"], r["new_pipeline_seen_after_publish"]
-    print(f"shadow report for {r['query']!r} since {r['since']:%Y-%m-%d %H:%M}")
+    print(f"comparison with the legacy monitor for {r['query']!r} since {r['since']:%Y-%m-%d %H:%M}")
     print(f"  new jobs seen by both: {r['seen_by_both']}   only legacy monitor: {r['only_legacy']}   only new pipeline: {r['only_new']}")
+    print(f"  of those seen by both: alerted {r['alerted']}, held back by a filter {r['held_back_by_filter']}, "
+          f"seen but NOT alerted {r['seen_but_not_alerted']}")
+    print(f"  MISSED (legacy had it, this pipeline did not alert): {r['missed']}")
     if lead["n"]:
         print(f"  new pipeline saw them first in {r['new_pipeline_first_in']}/{lead['n']}; lead over legacy: "
               f"median {lead['median_s']}s (p10 {lead['p10_s']}s, p90 {lead['p90_s']}s)")
@@ -409,9 +455,11 @@ def cmd_shadow_report(args, config: ScraperConfig) -> int:
         print(f"  new pipeline seen-after-publish: median {lag['median_s']}s, p90 {lag['p90_s']}s, min {lag['min_s']}s, max {lag['max_s']}s (n={lag['n']})")
     for j in r["only_legacy_jobs"]:
         print(f"  ONLY LEGACY: {j['legacy_seen']:%m-%d %H:%M:%S} {j['job_id']} {(j['title'] or '')[:70]}".encode("ascii", "replace").decode())
+    for j in r["not_alerted_jobs"]:
+        print(f"  NOT ALERTED: {j['new_seen']:%m-%d %H:%M:%S} {j['job_id']} {(j['title'] or '')[:70]}".encode("ascii", "replace").decode())
     for j in r["only_new_jobs"]:
         print(f"  only new:    {j['new_seen']:%m-%d %H:%M:%S} {j['job_id']}")
-    return 0
+    return code
 
 
 def main(argv: Optional[List[str]] = None) -> int:

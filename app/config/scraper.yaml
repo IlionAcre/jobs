@@ -81,17 +81,19 @@ dispatcher:
 # Health alerts sent to you on Telegram by the watchdog role (problem opened / still open / resolved).
 alerts:
   enabled: true
-  chat_id: null                 # null = TELEGRAM_CHAT_ID from .env
+  chat_id: null                 # null = ALERTS_CHAT_ID from .env, else TELEGRAM_CHAT_ID
   check_interval_s: 60
   stale_search_minutes: 5       # a subscribed search with no successful poll for this long
   failing_search_after: 3       # consecutive failed polls
   queue_backlog_max: 200
   repeat_after_minutes: 60      # reminder while a problem stays open
+  daily_summary_at: "09:00"     # local time of the daily summary message; null = none
 
 # Read-only status page: http://127.0.0.1:8787  (JSON at /api/status, /healthz for monitors)
 dashboard:
-  host: 127.0.0.1               # localhost only; there is no login on this page
+  host: 127.0.0.1               # a non-loopback address (e.g. the Tailscale one) requires the password
   port: 8787
+  password_env: DASHBOARD_PASSWORD   # .env variable with the page password; unset = no login (loopback only)
 
 # Telegram bot commands (/search, /searches, /filter, /remove, /pause, /resume).
 bot:
@@ -99,5 +101,6 @@ bot:
   access: allowlist             # allowlist | open  (no payments/portal yet, so access is by chat id)
   allowed_chat_ids: []          # TELEGRAM_CHAT_ID from .env is always allowed
   max_searches_per_chat: 5      # each distinct search costs requests against the IP's budget
+  commands_per_minute: 20       # per chat
 
 retention_days: 30

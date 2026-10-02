@@ -6,6 +6,7 @@ Postgres storage for the scraper pipeline (schema `scraper`).
   jobs           one row per Upwork job id, full detail + raw JSON
   search_hits    which search surfaced which job, and when first (this is the "is it new?" memory)
   deliveries     which subscription was already told about which job (never alert twice)
+  bot_access     chats the owner allowed to use the bot (in addition to the config's allowlist)
 
 `schema_ddl()` is the single definition of the tables; the Alembic migration and the tests both use it.
 """
@@ -94,6 +95,11 @@ def schema_ddl(schema: str = DEFAULT_SCHEMA) -> List[str]:
             PRIMARY KEY (subscription_id, job_id)
         )""",
         f"CREATE INDEX IF NOT EXISTS deliveries_delivered_idx ON {s}.deliveries (delivered_at)",
+        f"""CREATE TABLE IF NOT EXISTS {s}.bot_access (
+            chat_id   BIGINT PRIMARY KEY,
+            note      TEXT,
+            added_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )""",
     ]
 
 
@@ -249,6 +255,29 @@ class ScraperStore:
         sql = f"DELETE FROM {self._s}.subscriptions WHERE subscription_id = :sub AND chat_id = :chat"
         with self._engine.begin() as con:
             return (con.execute(text(sql), {"sub": int(subscription_id), "chat": int(chat_id)}).rowcount or 0) > 0
+
+    # --- who may use the bot (besides the chats listed in the config) ---------------------------
+
+    def allow_chat(self, chat_id: int, note: str = "") -> bool:
+        """True if the chat was not allowed before."""
+        sql = f"INSERT INTO {self._s}.bot_access (chat_id, note) VALUES (:chat, :note) ON CONFLICT DO NOTHING"
+        with self._engine.begin() as con:
+            return (con.execute(text(sql), {"chat": int(chat_id), "note": note or None}).rowcount or 0) > 0
+
+    def deny_chat(self, chat_id: int) -> bool:
+        with self._engine.begin() as con:
+            return (con.execute(text(f"DELETE FROM {self._s}.bot_access WHERE chat_id = :chat"),
+                                {"chat": int(chat_id)}).rowcount or 0) > 0
+
+    def allowed_chats(self) -> List[Dict[str, Any]]:
+        with self._engine.begin() as con:
+            rows = con.execute(text(f"SELECT chat_id, note, added_at FROM {self._s}.bot_access ORDER BY added_at")).all()
+        return [{"chat_id": int(r[0]), "note": r[1], "added_at": r[2]} for r in rows]
+
+    def chat_is_allowed(self, chat_id: int) -> bool:
+        with self._engine.begin() as con:
+            return con.execute(text(f"SELECT 1 FROM {self._s}.bot_access WHERE chat_id = :chat"),
+                               {"chat": int(chat_id)}).first() is not None
 
     def set_chat_enabled(self, chat_id: int, enabled: bool) -> int:
         """Pause or resume all of a chat's subscriptions. A search nobody is subscribed to stops being polled."""

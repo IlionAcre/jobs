@@ -65,6 +65,31 @@ def collect(runtime) -> HealthSnapshot:
     return snap
 
 
+def daily_summary(snap: HealthSnapshot, problems: List[Problem], activity: Optional[Dict[str, Any]], config: ScraperConfig) -> str:
+    """The once-a-day message: what happened in the last 24 hours and what is open now."""
+    lines = ["📊 Scraper daily summary"]
+    if activity is None:
+        lines.append("• Activity is unknown: Postgres is not reachable.")
+    else:
+        d = activity["deliveries"]
+        sent = d.get("sent", 0) + d.get("shadow", 0)
+        extra = ", ".join(f"{d[k]} {k}" for k in ("filtered", "duplicate") if d.get(k))
+        lines.append(f"• {activity['new_jobs']} new jobs, {sent} alerts" + (f" ({extra})" if extra else "")
+                     + ("" if config.dispatcher.mode == "live" else " — shadow mode, nothing was sent"))
+        if activity["lag_median_s"] is not None:
+            lines.append(f"• Seen {activity['lag_median_s']:.0f} s after publish (median), {activity['lag_p90_s']:.0f} s (p90)")
+    watched = [s for s in snap.searches if s["enabled"] and s["subscribers"]]
+    lines.append(f"• {len(watched)} searches watched, roles running: {', '.join(sorted({b.role for b in snap.roles})) or 'unknown'}")
+    if snap.token is not None:
+        lines.append(f"• Token {snap.token.age_s(snap.at) / 3600:.1f} h old, from {snap.token.minter}")
+    if problems:
+        lines.append("Open problems:")
+        lines.extend(f"• [{p.severity}] {p.message}" for p in problems)
+    else:
+        lines.append("No open problems.")
+    return "\n".join(lines)
+
+
 def _age_s(ts: Optional[datetime], now: float) -> Optional[float]:
     return None if ts is None else now - ts.astimezone(timezone.utc).timestamp()
 
