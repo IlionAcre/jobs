@@ -55,13 +55,18 @@ def engine():
     from app.store.db import build_db_dsn_from_env, make_engine
 
     load_dotenv(Path(__file__).resolve().parents[2] / ".env")
+    required = bool(os.environ.get("REQUIRE_SERVICES"))  # CI: a missing service is a failure, not a skip
     if not all(os.environ.get(k) for k in ("DB_NAME", "DB_USER", "DB_PASSWORD")):
+        if required:
+            pytest.fail("database not configured (DB_NAME, DB_USER, DB_PASSWORD)")
         pytest.skip("database not configured (.env)")
     eng = make_engine(build_db_dsn_from_env())
     try:
         with eng.connect() as con:
             con.execute(text("SELECT 1"))
     except Exception as ex:  # noqa: BLE001
+        if required:
+            raise
         pytest.skip(f"database not reachable: {ex!r}")
     yield eng
     eng.dispose()

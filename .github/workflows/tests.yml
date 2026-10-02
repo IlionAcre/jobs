@@ -1,0 +1,50 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: upwork_test
+          POSTGRES_USER: upwork
+          POSTGRES_PASSWORD: upwork
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U upwork -d upwork_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+
+    env:
+      DB_HOST: 127.0.0.1
+      DB_PORT: "5432"
+      DB_NAME: upwork_test
+      DB_USER: upwork
+      DB_PASSWORD: upwork
+      REDIS_URL: redis://127.0.0.1:6379/0
+      REQUIRE_SERVICES: "1"   # tests fail instead of skipping when Postgres or Redis is missing
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Install
+        run: uv sync --frozen
+      - name: Migrations apply to an empty database
+        run: uv run python main.py migrate
+      - name: Tests
+        # The "live" tests hit the real site and are deselected by pyproject.toml; never run them here.
+        run: uv run --with pytest pytest -q

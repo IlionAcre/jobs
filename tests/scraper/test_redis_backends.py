@@ -1,6 +1,7 @@
 """The Redis implementations, against the real Redis (ops/redis). Skipped when it is not reachable."""
 from __future__ import annotations
 
+import os
 import threading
 import time
 import uuid
@@ -22,6 +23,8 @@ def redis_client():
     try:
         client.ping()
     except Exception as ex:  # noqa: BLE001
+        if os.environ.get("REQUIRE_SERVICES"):  # CI: a missing service is a failure, not a skip
+            raise
         pytest.skip(f"redis not reachable: {ex!r}")
     yield client
     client.close()
