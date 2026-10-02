@@ -85,8 +85,49 @@ Telegram bot developer terms (telegram.org/tos/bot-developers) and Stars payment
 5. Google and magic-link sign-in with "Connect Telegram".
 6. Open the bot to the public (`bot.access` no longer an allowlist).
 
+## Product decisions (2026-10-02)
+- **Audience:** people who want cheap, fast and simple, yet configurable and trustworthy. No AI or other
+  fancy features for now; the differentiator is good, structured filtering.
+- **Plans** (a "search" is one watched query with its filters): 1 search $3/month, 3 searches $7,
+  10 searches $15. Provisional until the capacity tests.
+- **Trial:** 3 days, 1 search. Extension to 5 days is wanted; the trigger is *open* (see below).
+- **Portal:** required, hosted at home with the scraper. Design philosophy is discussed before planning it.
+- **Lapse timeline** (day 0 = renewal date):
+
+  | day | what happens |
+  |---|---|
+  | −3 | reminder: the plan renews automatically in 3 days |
+  | 0, payment fails | message: alerts stop in 3 days unless paid; alerts continue meanwhile |
+  | 3 | searches paused; message with a pay link |
+  | 7 | reminder |
+  | 10 | warning: searches will be deleted on day 15 |
+  | 15 | searches deleted; message says so |
+  | 90 | account data deleted |
+
+  Paying at any point before day 15 resumes everything as it was.
+
 ## Open items
-- Plans and prices; whether there is a free trial and how long.
+- Trial: 3 days flat, no extension, no payment method asked up front. Payment is requested on day 3;
+  paying earlier is always possible.
+- Reviews: no reward of any kind (Trustpilot forbids incentives). Instead the bot occasionally invites
+  users who have not reviewed yet to leave one on Trustpilot, timed for when they are likely using the bot.
+  Proposed rules: paying users only, not before 14 days of use, sent right after the user interacts with
+  the bot or within the hours they usually do, at most once every 30 days, at most 3 times in total, and
+  never again after "done" or "don't ask". We cannot see who reviewed on Trustpilot, so "done" is the
+  user's word.
+- Payment must be as low-friction as possible. Stars are friction for people who hold none, so the website
+  checkout (card, PayPal) is the primary path and Stars the in-bot alternative.
+- Referral reward: wanted, but only with protection against abuse. Proposed rules: the reward is granted
+  when the invited person makes a first payment (not when they start a trial), one reward per invited
+  Telegram account, an account can be invited only once and not by itself, and a cap on rewards per
+  inviter. Reward: free days added to the inviter's plan.
+- Whether the trial asks for a payment method up front.
+- Filters (probed 2026-10-02, `research/upwork_recon/01_search_request.md`). Free, applied by us on stored
+  fields: job type, fixed budget, hourly range, experience tier, duration, workload, skills, words.
+  Possible server-side (accepted input names, value formats still unknown, each makes a separately polled
+  search): `location`, `clientHires`, `budget`, `hourlyRate`, `contractorTier`, `durationV3`, `jobType`,
+  `workload`, `contractToHire`. Not available to a visitor: payment verified, client spend, client
+  rating, proposal count. To test with a logged-in account.
 - Email provider for magic links; domain; where the frontend and API are hosted (the scraper must stay on the
   residential IP, the portal need not).
 - Terms of service and privacy policy pages (required by Paddle and by Google OAuth).
