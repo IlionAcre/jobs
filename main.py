@@ -8,12 +8,9 @@ def main():
     if len(sys.argv) < 2:
         print("Usage: python main.py <command>")
         print("Commands:")
-        print("  bot       - Run the Telegram bot")
-        print("  worker    - Run the Upwork monitor worker")
-        print("  scheduler - Run the scheduler (pushes due queries to Redis)")
+        print("  scraper   - Scraper pipeline (python main.py scraper --help)")
         print("  init-db   - Initialize the database schema")
         print("  migrate   - Run Alembic migrations to head")
-        print("  scraper   - New scraper pipeline (python main.py scraper --help)")
         return
 
     cmd = sys.argv[1].lower()
@@ -22,18 +19,10 @@ def main():
         from app.scraper.cli import main as scraper_main
         sys.exit(scraper_main(sys.argv[2:]))
 
-    elif cmd == "bot":
-        import asyncio
-        from app.notify.bot_uw import main as bot_main
-        asyncio.run(bot_main())
-
-    elif cmd == "worker":
-        from app.workers.monitor_uw import main as worker_main
-        worker_main()
-
-    elif cmd == "scheduler":
-        from app.workers.scheduler import main as scheduler_main
-        scheduler_main()
+    elif cmd in ("bot", "worker", "scheduler"):
+        # The old bot/worker/scheduler were replaced by the scraper pipeline (see legacy/README.md).
+        print(f"'{cmd}' was retired. Use: python main.py scraper {'bot' if cmd == 'bot' else 'up'}")
+        sys.exit(2)
 
     elif cmd == "init-db":
         from app.store.init_core import main as init_main

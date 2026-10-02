@@ -1,7 +1,8 @@
 # ADR 0001: Canonical Runtime Path
 
 ## Status
-Accepted
+Superseded by [ADR 0002](0002-scraper-pipeline.md). The bot, scheduler and worker named below were moved to
+`legacy/` on 2026-10-01; the runtime path is `python main.py scraper up`.
 
 ## Context
 The repository currently includes legacy single-process scripts and a modular multi-user pipeline.

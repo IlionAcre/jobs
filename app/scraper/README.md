@@ -63,9 +63,8 @@ so `up` starts it. Commands: `/search <words>`, `/searches`, `/filter <id> inclu
 Access: `bot.access: allowlist` admits `bot.allowed_chat_ids` plus `TELEGRAM_CHAT_ID`; anyone else is told
 the bot is private and shown their chat id (so you can add it). `open` admits everyone. Each chat may watch
 `bot.max_searches_per_chat` searches. There is no portal or payment check yet; when there is, add an
-`AccessPolicy` in `bot.py` — nothing else changes. The old `main.py bot` (`app/notify/bot_uw.py`) is a
-different bot flow that requires a portal link and is not used by this pipeline; don't run both on the same
-bot token.
+`AccessPolicy` in `bot.py` — nothing else changes. The old bot (now `legacy/app/notify/bot_uw.py`)
+was a different flow that required a portal link; it is retired.
 
 ## Changing things
 
