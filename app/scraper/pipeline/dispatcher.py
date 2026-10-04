@@ -100,7 +100,12 @@ class Dispatcher:
                     counts[FILTERED] += 1
                     log.info("job_filtered_out", extra={"subscription_id": sub.subscription_id, "job_id": job_id, "title": job.title})
                 continue
-            if self._store.chat_already_has_job(sub.chat_id, job_id):
+            earlier = None
+            if self._cfg.dispatcher.duplicates_per_source:
+                # Experiment mode: every source sends its own alert, and a later one says by how much
+                # it lost the race.
+                earlier = self._store.first_delivery_to_chat(sub.chat_id, job_id)
+            elif self._store.chat_already_has_job(sub.chat_id, job_id):
                 # Same chat, another of its searches matched this job too: tell a person once.
                 if self._store.try_mark_delivered(sub.subscription_id, job_id, DUPLICATE):
                     counts[DUPLICATE] += 1
@@ -119,6 +124,13 @@ class Dispatcher:
                     text = f"🧪 {text}\n<i>via the all-jobs collector · matched by us on: {escape(words)}</i>"
                 else:
                     text += "\n<i>via your Upwork search</i>"
+            if earlier is not None:
+                behind = (datetime.now(timezone.utc) - earlier[0]).total_seconds()
+                first = self._store.get_search(earlier[1])
+                winner = "the all-jobs collector" if first and first.always_poll else "your Upwork search"
+                text += f"\n⏱ <b>2nd</b>: {winner} sent this {behind:.0f} s earlier"
+                log.info("source_race", extra={"job_id": job_id, "chat_id": sub.chat_id, "behind_s": round(behind, 1),
+                                               "loser_search_id": search_id, "winner_search_id": earlier[1]})
             tag = escape(self._cfg.dispatcher.live_tag)
             if live:
                 self._send(sub.chat_id, tag + text)

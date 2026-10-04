@@ -105,6 +105,9 @@ class DispatcherConfig(_Model):
     # Add a line saying where an alert came from (your Upwork search, or the all-jobs collector). For
     # experiments that compare the two; a job still reaches a chat once, so it shows which source won.
     show_source: bool = False
+    # Experiment mode: a chat gets one alert per matching search instead of one per job, and the later one
+    # says how many seconds after the first it arrived. Off in normal use.
+    duplicates_per_source: bool = False
     live_tag: str = ""  # put in front of live alerts, e.g. "[new] " while the legacy monitor also sends
     show_description_chars: int = Field(default=300, ge=0)
 

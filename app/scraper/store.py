@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from sqlalchemy import Engine, text
@@ -413,6 +414,16 @@ class ScraperStore:
                   WHERE b.chat_id = :chat AND d.job_id = :job AND d.status IN ('sent', 'shadow') LIMIT 1"""
         with self._engine.begin() as con:
             return con.execute(text(sql), {"chat": int(chat_id), "job": job_id}).first() is not None
+
+    def first_delivery_to_chat(self, chat_id: int, job_id: str) -> Optional[Tuple[datetime, int]]:
+        """(when, search_id) of the first time any of this chat's subscriptions was sent this job."""
+        sql = f"""SELECT d.delivered_at, b.search_id FROM {self._s}.deliveries d
+                  JOIN {self._s}.subscriptions b ON b.subscription_id = d.subscription_id
+                  WHERE b.chat_id = :chat AND d.job_id = :job AND d.status IN ('sent', 'shadow')
+                  ORDER BY d.delivered_at LIMIT 1"""
+        with self._engine.begin() as con:
+            row = con.execute(text(sql), {"chat": int(chat_id), "job": job_id}).first()
+        return (row[0], int(row[1])) if row else None
 
     # --- housekeeping -------------------------------------------------------------------------
 

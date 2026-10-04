@@ -475,3 +475,20 @@ def test_no_source_line_unless_asked(rig, cfg):
     rig.store.upsert_jobs([job("~x")])
     d.dispatch(s, "~x")
     assert "via" not in rig.sent[0][1]
+
+
+def test_experiment_mode_sends_both_and_says_who_was_first(rig, cfg):
+    both = cfg.model_copy(update={"dispatcher": cfg.dispatcher.model_copy(
+        update={"mode": "live", "show_source": True, "duplicates_per_source": True})})
+    d = Dispatcher(rig.store, rig.queue, both, send=lambda chat, text: rig.sent.append((chat, text)))
+    search = rig.store.upsert_search("python OR scraping")
+    collector = rig.store.upsert_search("", always_poll=True, ids_count=50)
+    rig.store.subscribe(111, search)
+    rig.store.subscribe(111, collector, include_words=["python"])
+    rig.store.upsert_jobs([job("~a")])
+    d.dispatch(collector, "~a")
+    d.dispatch(search, "~a")
+    d.dispatch(search, "~a")                                                   # redelivered: still once per source
+    first, second = (text for _, text in rig.sent)
+    assert len(rig.sent) == 2 and "2nd" not in first
+    assert "⏱ <b>2nd</b>: the all-jobs collector sent this" in second and "via your Upwork search" in second
