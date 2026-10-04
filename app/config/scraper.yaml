@@ -75,6 +75,7 @@ egress_id: default              # names the outbound IP; tokens and rate budgets
 dispatcher:
   mode: live                    # shadow = log would-be alerts (and send tagged to admin_chat_id if set) | live
   admin_chat_id: null
+  show_source: true              # all-jobs experiment: each alert says whether it came via your search or the collector
   live_tag: ""                  # text put in front of every live alert (was "[new] " while monitor_uw.py also ran)
   show_description_chars: 300
 

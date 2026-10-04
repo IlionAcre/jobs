@@ -90,7 +90,10 @@ class Dispatcher:
             return counts
 
         live = self._cfg.dispatcher.mode == "live"
-        search_text = None
+        spec = self._store.get_search(search_id)
+        # The all-jobs collector (an always-polled search) is matched by us, not by Upwork: say so.
+        from_collector = bool(spec and spec.always_poll)
+        search_text = (spec.query_text if spec else None) or None
         for sub in self._store.subscriptions_for_search(search_id):
             if not matches(job, sub.include_words, sub.exclude_words):
                 if self._store.try_mark_delivered(sub.subscription_id, job_id, FILTERED):
@@ -108,11 +111,14 @@ class Dispatcher:
             counts[status] += 1
             # Say which search matched only when the chat has more than one; otherwise it is noise.
             several = len(self._store.subscriptions_for_chat(sub.chat_id)) > 1
-            if several and search_text is None:
-                spec = self._store.get_search(search_id)
-                search_text = spec.query_text if spec else None
             text = format_job(job, description_chars=self._cfg.dispatcher.show_description_chars,
-                              search=search_text if several else None)
+                              search=search_text if several and not from_collector else None)
+            if self._cfg.dispatcher.show_source:
+                if from_collector:
+                    words = ", ".join(sub.include_words) or "every job"
+                    text = f"🧪 {text}\n<i>via the all-jobs collector · matched by us on: {escape(words)}</i>"
+                else:
+                    text += "\n<i>via your Upwork search</i>"
             tag = escape(self._cfg.dispatcher.live_tag)
             if live:
                 self._send(sub.chat_id, tag + text)

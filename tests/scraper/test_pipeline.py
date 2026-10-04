@@ -444,3 +444,34 @@ def test_a_page_of_only_new_jobs_is_reported_as_overflow(rig, caplog):
     with caplog.at_level("WARNING"):
         rig.fetcher.poll(s)
     assert any(r.getMessage() == "page_overflow" for r in caplog.records)
+
+
+def test_alerts_say_which_source_won_and_reach_a_chat_once(rig, cfg):
+    shown = cfg.model_copy(update={"dispatcher": cfg.dispatcher.model_copy(update={"mode": "live", "show_source": True})})
+    d = Dispatcher(rig.store, rig.queue, shown, send=lambda chat, text: rig.sent.append((chat, text)))
+    search = rig.store.upsert_search("python OR scraping")
+    collector = rig.store.upsert_search("", always_poll=True, ids_count=50)
+    rig.store.subscribe(111, search)
+    rig.store.subscribe(111, collector, include_words=["python", "scraping"])
+    rig.store.upsert_jobs([job("~a"), job("~b")])
+
+    d.dispatch(collector, "~a")                                                # collector first
+    d.dispatch(search, "~a")                                                   # then the search: duplicate
+    d.dispatch(search, "~b")                                                   # search first
+    d.dispatch(collector, "~b")
+    a, b = (text for _, text in rig.sent)
+    assert len(rig.sent) == 2
+    assert a.startswith("🧪 <b>Python scraper</b>") and "via the all-jobs collector · matched by us on: python, scraping" in a
+    assert "🔎" not in a                                                       # the collector's empty query is not a label
+    assert b.startswith("<b>Python scraper</b>") and b.endswith("<i>via your Upwork search</i>")
+    assert "🔎 python OR scraping" in b
+
+
+def test_no_source_line_unless_asked(rig, cfg):
+    live = cfg.model_copy(update={"dispatcher": cfg.dispatcher.model_copy(update={"mode": "live"})})
+    d = Dispatcher(rig.store, rig.queue, live, send=lambda chat, text: rig.sent.append((chat, text)))
+    s = rig.store.upsert_search("python")
+    rig.store.subscribe(111, s)
+    rig.store.upsert_jobs([job("~x")])
+    d.dispatch(s, "~x")
+    assert "via" not in rig.sent[0][1]
