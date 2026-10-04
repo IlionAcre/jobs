@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import queue
+import re
 import random
 import threading
 from typing import Optional, Tuple
@@ -17,6 +19,12 @@ from aiogram.exceptions import (
 )
 
 
+def strip_html(text: str) -> str:
+    """Telegram HTML -> plain text (keeps a link's address so it is still usable)."""
+    text = re.sub(r'<a href="([^"]*)">([^<]*)</a>', lambda m: f"{m.group(2)} {html.unescape(m.group(1))}", text)
+    return html.unescape(re.sub(r"<[^>]+>", "", text))
+
+
 class TelegramNotifier:
     """
     Background-thread Telegram sender (aiogram Bot) for synchronous workers.
@@ -26,12 +34,14 @@ class TelegramNotifier:
 
     def __init__(self, token: str) -> None:
         self._token = token
-        self._q: "queue.Queue[Optional[Tuple[int, str]]]" = queue.Queue()
+        self._q: "queue.Queue[Optional[Tuple[int, str, bool]]]" = queue.Queue()
         self._thread = threading.Thread(target=self._thread_main, daemon=True)
         self._thread.start()
 
-    def send(self, chat_id: int, text: str) -> None:
-        self._q.put((int(chat_id), text))
+    def send(self, chat_id: int, text: str, html: bool = False) -> None:
+        """`html=True`: Telegram HTML formatting. If Telegram rejects the markup, the text is sent again
+        with the tags removed, so a formatting mistake never loses an alert."""
+        self._q.put((int(chat_id), text, html))
 
     def close(self) -> None:
         self._q.put(None)
@@ -50,21 +60,29 @@ class TelegramNotifier:
                 item = await asyncio.to_thread(self._q.get)
                 if item is None:
                     return
-                chat_id, text = item
-                await self._send_with_retries(bot, chat_id, text)
+                chat_id, text, html = item
+                await self._send_with_retries(bot, chat_id, text, html)
         finally:
             try:
                 await bot.session.close()
             except Exception:
                 pass
 
-    async def _send_with_retries(self, bot: Bot, chat_id: int, text: str) -> None:
+    async def _send_with_retries(self, bot: Bot, chat_id: int, text: str, html: bool = False) -> None:
         max_attempts = 5
         base_delay = 1.0
 
         for attempt in range(1, max_attempts + 1):
             try:
-                await bot.send_message(chat_id=chat_id, text=text, disable_web_page_preview=True)
+                await bot.send_message(chat_id=chat_id, text=text, disable_web_page_preview=True,
+                                       parse_mode="HTML" if html else None)
+                return
+
+            except TelegramBadRequest as e:
+                if html and "parse" in str(e).lower():
+                    html, text = False, strip_html(text)  # broken markup: send it plain rather than not at all
+                    continue
+                print(f"[tg] rejected chat_id={chat_id}: {e}")
                 return
 
             except TelegramRetryAfter as e:

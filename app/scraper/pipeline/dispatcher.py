@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Callable, Dict, List
+from datetime import datetime, timezone
+from html import escape
+from typing import Callable, Dict, List, Optional
 
 from app.scraper.config import ScraperConfig
 from app.scraper.filters import matches
@@ -21,25 +23,46 @@ def _money(value: float) -> str:
     return f"${value:,.0f}" if float(value).is_integer() else f"${value:,.2f}"
 
 
-def format_job(job: Job, *, description_chars: int = 300) -> str:
+def _ago(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    if seconds < 120:
+        return f"{seconds} s ago"
+    if seconds < 7200:
+        return f"{seconds // 60} min ago"
+    return f"{seconds // 3600} h ago"
+
+
+def format_job(job: Job, *, description_chars: int = 300, now: Optional[datetime] = None,
+               search: Optional[str] = None) -> str:
+    """One alert, as Telegram HTML. Built to be read in two seconds from the notification itself:
+    the title is the first line (it is what the lock screen shows), then money and level, then how fresh
+    it is, then the details for whoever opens it. `search` is shown when the chat watches several."""
     if job.job_type == "hourly":
         if job.hourly_min is not None and job.hourly_max is not None:
-            budget = f"Hourly {_money(job.hourly_min)}-{_money(job.hourly_max)}"
+            budget = f"Hourly {_money(job.hourly_min)}–{_money(job.hourly_max)}"
         else:
             budget = "Hourly"
     elif job.fixed_amount is not None:
         budget = f"Fixed {_money(job.fixed_amount)}"
     else:
         budget = "Fixed price"
-    meta = " | ".join(x for x in [budget, job.tier.capitalize() if job.tier else None, job.duration, job.workload] if x)
+    meta = " · ".join(x for x in [budget, job.tier.capitalize() if job.tier else None, job.duration, job.workload] if x)
 
-    lines: List[str] = [f"• {job.title or '(no title)'} — {meta}"]
+    lines: List[str] = [f"<b>{escape(job.title or '(no title)')}</b>", f"💵 {escape(meta)}"]
+    if job.publish_time is not None:
+        now = now or datetime.now(timezone.utc)
+        lines.append(f"⏱ Posted {_ago((now - job.publish_time).total_seconds())}")
+    if search:
+        lines.append(f"🔎 {escape(search)}")
     if description_chars and job.description:
-        d = job.description
-        lines.append(d if len(d) <= description_chars else d[:description_chars].rstrip() + "…")
-    lines.append(job.url)
+        d = " ".join(job.description.split())  # one paragraph: the excerpt is a preview, not the posting
+        lines.append("")
+        lines.append(escape(d if len(d) <= description_chars else d[:description_chars].rstrip() + "…"))
     if job.skills:
-        lines.append("skills: " + ", ".join(job.skills[:12]))
+        lines.append("")
+        lines.append("<i>" + escape(", ".join(job.skills[:10])) + "</i>")
+    lines.append("")
+    lines.append(f'<a href="{escape(job.url, quote=True)}">Open on Upwork →</a>')
     return "\n".join(lines)
 
 
@@ -66,8 +89,8 @@ class Dispatcher:
             log.warning("dispatch_job_missing", extra={"search_id": search_id, "job_id": job_id})
             return counts
 
-        text = format_job(job, description_chars=self._cfg.dispatcher.show_description_chars)
         live = self._cfg.dispatcher.mode == "live"
+        search_text = None
         for sub in self._store.subscriptions_for_search(search_id):
             if not matches(job, sub.include_words, sub.exclude_words):
                 if self._store.try_mark_delivered(sub.subscription_id, job_id, FILTERED):
@@ -83,8 +106,16 @@ class Dispatcher:
             if not self._store.try_mark_delivered(sub.subscription_id, job_id, status):
                 continue  # this subscription already has this job (e.g. the event was redelivered)
             counts[status] += 1
+            # Say which search matched only when the chat has more than one; otherwise it is noise.
+            several = len(self._store.subscriptions_for_chat(sub.chat_id)) > 1
+            if several and search_text is None:
+                spec = self._store.get_search(search_id)
+                search_text = spec.query_text if spec else None
+            text = format_job(job, description_chars=self._cfg.dispatcher.show_description_chars,
+                              search=search_text if several else None)
+            tag = escape(self._cfg.dispatcher.live_tag)
             if live:
-                self._send(sub.chat_id, f"🔔 {self._cfg.dispatcher.live_tag}New job\n\n" + text)
+                self._send(sub.chat_id, tag + text)
             elif self._cfg.dispatcher.admin_chat_id is not None:
                 self._send(self._cfg.dispatcher.admin_chat_id, f"🧪 [shadow → chat {sub.chat_id}]\n\n" + text)
             log.info("job_delivered" if live else "job_would_deliver",

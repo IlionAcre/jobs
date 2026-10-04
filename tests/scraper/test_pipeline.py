@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import random
 import threading
 import time
@@ -271,14 +272,35 @@ def test_bad_messages_are_ignored(rig):
 
 # --- dispatcher -------------------------------------------------------------------------------
 
+NOW = datetime.fromtimestamp(T0, tz=timezone.utc)
+
+
 def test_format_job_variants():
-    fixed = format_job(job(), description_chars=10)
-    assert fixed.splitlines()[0] == "• Python scraper — Fixed $500 | Expert | 1 to 3 months"
-    assert "Scrape a s…" in fixed and "https://www.upwork.com/jobs/~j1" in fixed and "skills: Python, Data Scraping" in fixed
-    hourly = format_job(job(job_type="hourly", fixed_amount=None, hourly_min=25.0, hourly_max=65.5, workload="Less than 30 hrs/week"))
-    assert "Hourly $25-$65.50" in hourly and "Less than 30 hrs/week" in hourly
-    assert "Hourly |" in format_job(job(job_type="hourly", fixed_amount=None))
-    assert "…" not in format_job(job(), description_chars=0) and "Scrape a site" not in format_job(job(), description_chars=0)
+    fixed = format_job(job(), description_chars=10, now=NOW)
+    lines = fixed.splitlines()
+    assert lines[0] == "<b>Python scraper</b>"                                # the lock-screen line
+    assert lines[1] == "💵 Fixed $500 · Expert · 1 to 3 months" and lines[2] == "⏱ Posted 30 s ago"
+    assert "Scrape a s…" in fixed and "<i>Python, Data Scraping</i>" in fixed
+    assert lines[-1] == '<a href="https://www.upwork.com/jobs/~j1">Open on Upwork →</a>'
+    assert "🔎" not in fixed
+    hourly = format_job(job(job_type="hourly", fixed_amount=None, hourly_min=25.0, hourly_max=65.5, workload="Less than 30 hrs/week"), now=NOW)
+    assert "Hourly $25–$65.50" in hourly and "Less than 30 hrs/week" in hourly
+    assert "💵 Hourly · Expert" in format_job(job(job_type="hourly", fixed_amount=None), now=NOW)
+    assert "…" not in format_job(job(), description_chars=0, now=NOW) and "Scrape a site" not in format_job(job(), description_chars=0, now=NOW)
+    assert "Posted 5 min ago" in format_job(job(published_s_ago=300), now=NOW)
+    assert "🔎 python OR react" in format_job(job(), now=NOW, search="python OR react")
+
+
+def test_format_job_escapes_what_upwork_sends():
+    text = format_job(job(title="C++ <dev> & Q/A", description="if a < b && c > d", skills=("R&D",)), now=NOW)
+    assert "<b>C++ &lt;dev&gt; &amp; Q/A</b>" in text and "a &lt; b &amp;&amp; c &gt; d" in text and "R&amp;D" in text
+
+
+def test_plain_text_fallback_keeps_the_link():
+    from app.notify.telegram import strip_html
+
+    plain = strip_html(format_job(job(title="A & B"), now=NOW))
+    assert plain.splitlines()[0] == "A & B" and "Open on Upwork → https://www.upwork.com/jobs/~j1" in plain and "<" not in plain
 
 
 def test_live_dispatch_fans_out_filters_and_never_repeats(rig, cfg):
@@ -290,7 +312,7 @@ def test_live_dispatch_fans_out_filters_and_never_repeats(rig, cfg):
     rig.store.subscribe(333, s, exclude_words=["nothing-matching"])
     rig.store.upsert_jobs([job("~x")])
     assert d.dispatch(s, "~x") == {"sent": 2, "shadow": 0, "filtered": 1, "duplicate": 0}
-    assert [chat for chat, _ in rig.sent] == [111, 333] and rig.sent[0][1].startswith("🔔 New job")
+    assert [chat for chat, _ in rig.sent] == [111, 333] and rig.sent[0][1].startswith("<b>Python scraper</b>")
     assert sum(d.dispatch(s, "~x").values()) == 0                            # redelivered event: no duplicates
     assert len(rig.sent) == 2
 
@@ -302,7 +324,20 @@ def test_live_tag_marks_alerts_from_this_pipeline(rig, cfg):
     rig.store.subscribe(111, s)
     rig.store.upsert_jobs([job("~x")])
     d.dispatch(s, "~x")
-    assert rig.sent[0][1].startswith("🔔 [new] New job")
+    assert rig.sent[0][1].startswith("[new] <b>Python scraper</b>")
+
+
+def test_alert_names_the_search_only_when_the_chat_has_several(rig, cfg):
+    live = cfg.model_copy(update={"dispatcher": cfg.dispatcher.model_copy(update={"mode": "live"})})
+    d = Dispatcher(rig.store, rig.queue, live, send=lambda chat, text: rig.sent.append((chat, text)))
+    py, react = rig.store.upsert_search("python"), rig.store.upsert_search("react")
+    rig.store.subscribe(111, py)                                               # one search: no label
+    rig.store.subscribe(222, py)
+    rig.store.subscribe(222, react)                                            # two searches: label
+    rig.store.upsert_jobs([job("~x")])
+    d.dispatch(py, "~x")
+    by_chat = dict(rig.sent)
+    assert "🔎" not in by_chat[111] and "🔎 python" in by_chat[222]
 
 
 def test_shadow_mode_sends_nothing_to_subscribers(rig, cfg):
@@ -355,7 +390,7 @@ def test_real_fixture_flows_through_store_and_format(rig):
     rig.store.upsert_jobs(jobs)
     for j in jobs:
         text = format_job(rig.store.get_job(j.job_id))
-        assert j.url in text and (j.title or "") in text
+        assert j.url in text and html.escape(j.title or "", quote=False) in text
 
 
 # --- queue backend outages --------------------------------------------------------------------

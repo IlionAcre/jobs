@@ -102,7 +102,8 @@ def _sender(config: ScraperConfig) -> Callable[[int, str], None]:
     if not token:
         raise SystemExit("TELEGRAM_BOT_TOKEN is required for dispatcher.mode=live or dispatcher.admin_chat_id")
     from app.notify.telegram import TelegramNotifier
-    return TelegramNotifier(token=token).send
+    notifier = TelegramNotifier(token=token)
+    return lambda chat_id, text: notifier.send(chat_id, text, html=True)  # alerts are Telegram HTML
 
 
 def _owner_chat_id() -> Optional[int]:

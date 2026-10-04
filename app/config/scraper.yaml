@@ -75,7 +75,7 @@ egress_id: default              # names the outbound IP; tokens and rate budgets
 dispatcher:
   mode: live                    # shadow = log would-be alerts (and send tagged to admin_chat_id if set) | live
   admin_chat_id: null
-  live_tag: "[new] "            # marks alerts from this pipeline while monitor_uw.py also sends; "" after the switch
+  live_tag: ""                  # text put in front of every live alert (was "[new] " while monitor_uw.py also ran)
   show_description_chars: 300
 
 # Health alerts sent to you on Telegram by the watchdog role (problem opened / still open / resolved).
