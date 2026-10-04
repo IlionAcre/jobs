@@ -534,10 +534,11 @@ def cmd_firehose_report(args, config: ScraperConfig) -> int:
         return 1 if "error" in r else 0
     w, v, sp, c, g = r["window"], r["volume"], r["speed_seen_after_publish"], r["completeness"], r["granularity"]
     fmt = lambda d: "no data" if not d["n"] else f"median {d['median_s']} s, p10 {d['p10_s']}, p90 {d['p90_s']}, min {d['min_s']}, max {d['max_s']} (n={d['n']})"  # noqa: E731
-    out = [f"all-jobs experiment, {w['since']:%m-%d %H:%M} → {w['until']:%m-%d %H:%M} UTC ({w['hours']} h)",
+    utc = lambda t: t.astimezone(timezone.utc)  # noqa: E731  (Postgres returns the session's time zone)
+    out = [f"all-jobs experiment, {utc(w['since']):%m-%d %H:%M} → {utc(w['until']):%m-%d %H:%M} UTC ({w['hours']} h)",
            "", "VOLUME",
            f"  {v['jobs']} new jobs, {v['per_hour_avg']}/hour on average"
-           + (f"; busiest hour {v['busiest_hour'][0]:%m-%d %H}:00 UTC with {v['busiest_hour'][1]}" if v["busiest_hour"] else ""),
+           + (f"; busiest hour {utc(v['busiest_hour'][0]):%m-%d %H}:00 UTC with {v['busiest_hour'][1]}" if v["busiest_hour"] else ""),
            f"  most new jobs in a single poll: {v['most_new_in_one_poll']}",
            "", "SPEED (publish → first seen)",
            f"  collector:  {fmt(sp['collector'])}", f"  per-search: {fmt(sp['per_search'])}",
