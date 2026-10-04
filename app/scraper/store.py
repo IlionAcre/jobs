@@ -100,6 +100,10 @@ def schema_ddl(schema: str = DEFAULT_SCHEMA) -> List[str]:
             note      TEXT,
             added_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )""",
+        # Per-search overrides (migration 0004). `always_poll`: polled even with no subscriber (the
+        # all-jobs collector). `ids_count`: how many newest ids one poll looks at (default poller.ids_count).
+        f"ALTER TABLE {s}.searches ADD COLUMN IF NOT EXISTS always_poll BOOLEAN NOT NULL DEFAULT FALSE",
+        f"ALTER TABLE {s}.searches ADD COLUMN IF NOT EXISTS ids_count INT",
     ]
 
 
@@ -120,6 +124,12 @@ class SearchRow:
     poll_seconds: Optional[int]
     enabled: bool
     primed: bool
+    ids_count: Optional[int] = None
+    always_poll: bool = False
+
+
+def _search_row(r) -> SearchRow:
+    return SearchRow(int(r[0]), r[1], r[2], r[3], bool(r[4]), bool(r[5]), r[6], bool(r[7]))
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,16 +166,25 @@ class ScraperStore:
 
     # --- searches and subscriptions -----------------------------------------------------------
 
-    def upsert_search(self, query_text: str, *, platform: str = PLATFORM_UPWORK, poll_seconds: Optional[int] = None) -> int:
+    def upsert_search(self, query_text: str, *, platform: str = PLATFORM_UPWORK, poll_seconds: Optional[int] = None,
+                      always_poll: Optional[bool] = None, ids_count: Optional[int] = None) -> int:
         sql = f"""
-            INSERT INTO {self._s}.searches (platform, query_text, query_norm, poll_seconds)
-            VALUES (:platform, :text, :norm, :poll)
+            INSERT INTO {self._s}.searches (platform, query_text, query_norm, poll_seconds, always_poll, ids_count)
+            VALUES (:platform, :text, :norm, :poll, COALESCE(:always, FALSE), :ids)
             ON CONFLICT (platform, query_norm) DO UPDATE SET enabled = TRUE,
-                poll_seconds = COALESCE(EXCLUDED.poll_seconds, {self._s}.searches.poll_seconds)
+                poll_seconds = COALESCE(EXCLUDED.poll_seconds, {self._s}.searches.poll_seconds),
+                always_poll = COALESCE(:always, {self._s}.searches.always_poll),
+                ids_count = COALESCE(EXCLUDED.ids_count, {self._s}.searches.ids_count)
             RETURNING search_id"""
         with self._engine.begin() as con:
             return int(con.execute(text(sql), {"platform": platform, "text": query_text.strip(),
-                                               "norm": normalize_query(query_text), "poll": poll_seconds}).scalar_one())
+                                               "norm": normalize_query(query_text), "poll": poll_seconds,
+                                               "always": always_poll, "ids": ids_count}).scalar_one())
+
+    def set_search_enabled(self, search_id: int, enabled: bool) -> None:
+        with self._engine.begin() as con:
+            con.execute(text(f"UPDATE {self._s}.searches SET enabled = :on WHERE search_id = :id"),
+                        {"on": bool(enabled), "id": int(search_id)})
 
     def subscribe(self, chat_id: int, search_id: int, *, include_words: Sequence[str] = (),
                   exclude_words: Sequence[str] = ()) -> int:
@@ -180,28 +199,29 @@ class ScraperStore:
                                                "inc": list(include_words), "exc": list(exclude_words)}).scalar_one())
 
     def get_search(self, search_id: int) -> Optional[SearchRow]:
-        sql = f"""SELECT search_id, platform, query_text, poll_seconds, enabled, primed_at IS NOT NULL
+        sql = f"""SELECT search_id, platform, query_text, poll_seconds, enabled, primed_at IS NOT NULL, ids_count, always_poll
                   FROM {self._s}.searches WHERE search_id = :id"""
         with self._engine.begin() as con:
             row = con.execute(text(sql), {"id": int(search_id)}).first()
-        return SearchRow(int(row[0]), row[1], row[2], row[3], bool(row[4]), bool(row[5])) if row else None
+        return _search_row(row) if row else None
 
     def count_enabled_searches(self) -> int:
         with self._engine.begin() as con:
             return int(con.execute(text(f"SELECT count(*) FROM {self._s}.searches WHERE enabled")).scalar_one())
 
     def due_searches(self, limit: int = 200) -> List[SearchRow]:
-        """Enabled searches whose time has come and that someone is subscribed to."""
+        """Enabled searches whose time has come and that someone is subscribed to (or that are always polled)."""
         sql = f"""
-            SELECT s.search_id, s.platform, s.query_text, s.poll_seconds, s.enabled, s.primed_at IS NOT NULL
+            SELECT s.search_id, s.platform, s.query_text, s.poll_seconds, s.enabled, s.primed_at IS NOT NULL,
+                   s.ids_count, s.always_poll
             FROM {self._s}.searches s
             WHERE s.enabled AND s.next_run_at <= NOW()
-              AND EXISTS (SELECT 1 FROM {self._s}.subscriptions b WHERE b.search_id = s.search_id AND b.enabled)
+              AND (s.always_poll OR EXISTS (SELECT 1 FROM {self._s}.subscriptions b WHERE b.search_id = s.search_id AND b.enabled))
             ORDER BY s.next_run_at
             LIMIT :limit"""
         with self._engine.begin() as con:
             rows = con.execute(text(sql), {"limit": int(limit)}).all()
-        return [SearchRow(int(r[0]), r[1], r[2], r[3], bool(r[4]), bool(r[5])) for r in rows]
+        return [_search_row(r) for r in rows]
 
     def schedule_next(self, search_id: int, seconds: float) -> None:
         sql = f"UPDATE {self._s}.searches SET next_run_at = NOW() + make_interval(secs => :secs) WHERE search_id = :id"

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Callable, List, Protocol, Sequence, TypeVar
+from typing import Callable, List, Optional, Protocol, Sequence, TypeVar
 
 from app.scraper.config import ScraperConfig
 from app.scraper.errors import AuthExpired, Challenged
@@ -41,8 +41,8 @@ class UpworkSearchClient:
     def transport(self) -> Transport:
         return self._transports[self._active]
 
-    def search_ids(self, query_text: str) -> List[JobRef]:
-        body = build_body(query_text, count=self._cfg.poller.ids_count, selection=IDS_SELECTION)
+    def search_ids(self, query_text: str, count: Optional[int] = None) -> List[JobRef]:
+        body = build_body(query_text, count=count or self._cfg.poller.ids_count, selection=IDS_SELECTION)
         return self._call(body, parse_refs)
 
     def search_details(self, query_text: str, count: int) -> List[Job]:

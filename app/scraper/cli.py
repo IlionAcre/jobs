@@ -507,6 +507,54 @@ def cmd_backup(args, config: ScraperConfig) -> int:
     return 0
 
 
+def cmd_firehose(args, config: ScraperConfig) -> int:
+    from app.scraper.factory import build_store
+    from app.scraper.firehose import FIREHOSE_QUERY
+
+    store = build_store()
+    if args.off:
+        sid = store.upsert_search(FIREHOSE_QUERY)
+        store.set_search_enabled(sid, False)
+        print(f"all-jobs collector (search {sid}) stopped; its data is kept")
+        return 0
+    sid = store.upsert_search(FIREHOSE_QUERY, poll_seconds=args.poll_seconds, always_poll=True, ids_count=args.page)
+    print(f"all-jobs collector is search {sid}: every {args.poll_seconds} s, {args.page} newest jobs per poll, "
+          "no subscribers (nothing is sent). Report: python main.py scraper firehose-report")
+    return 0
+
+
+def cmd_firehose_report(args, config: ScraperConfig) -> int:
+    from app.scraper.factory import build_store
+    from app.scraper.firehose import report
+    from app.store.db import build_db_dsn_from_env, make_engine
+
+    r = report(make_engine(build_db_dsn_from_env()), build_store(), query=args.query, hours=args.hours)
+    if args.json or "error" in r:
+        print(json.dumps(r, indent=2, default=str))
+        return 1 if "error" in r else 0
+    w, v, sp, c, g = r["window"], r["volume"], r["speed_seen_after_publish"], r["completeness"], r["granularity"]
+    fmt = lambda d: "no data" if not d["n"] else f"median {d['median_s']} s, p10 {d['p10_s']}, p90 {d['p90_s']}, min {d['min_s']}, max {d['max_s']} (n={d['n']})"  # noqa: E731
+    out = [f"all-jobs experiment, {w['since']:%m-%d %H:%M} → {w['until']:%m-%d %H:%M} UTC ({w['hours']} h)",
+           "", "VOLUME",
+           f"  {v['jobs']} new jobs, {v['per_hour_avg']}/hour on average"
+           + (f"; busiest hour {v['busiest_hour'][0]:%m-%d %H}:00 UTC with {v['busiest_hour'][1]}" if v["busiest_hour"] else ""),
+           f"  most new jobs in a single poll: {v['most_new_in_one_poll']}",
+           "", "SPEED (publish → first seen)",
+           f"  collector:  {fmt(sp['collector'])}", f"  per-search: {fmt(sp['per_search'])}",
+           "", f"COMPLETENESS (jobs the per-search polling found for {g['query']!r})",
+           f"  {c['also_seen_by_collector']} of {c['found_by_per_search']} also seen by the collector; "
+           f"collector first in {c['collector_first_in']}; lead {fmt(c['collector_seen_first_by'])}"]
+    out += [f"  MISSED by collector: {j}" for j in c["missed_by_collector"]]
+    out += ["", f"GRANULARITY (our literal matcher on every collected job vs Upwork's search for {g['query']!r})",
+            f"  Upwork returned {g['upwork_matched']}, local matcher {g['local_matched']}, both {g['both']}"]
+    out += [f"  upwork only (lost by matching locally): {x['job_id']} {(x['title'] or '')[:70]}" for x in g["upwork_only"]]
+    out += [f"  local only (extra, or missed by the per-search poll): {x['job_id']} {(x['title'] or '')[:70]}" for x in g["local_only"]]
+    if g["collected_without_details"]:
+        out.append(f"  ({g['collected_without_details']} collected jobs had no details stored)")
+    print("\n".join(out).encode(sys.stdout.encoding or "utf-8", "replace").decode(sys.stdout.encoding or "utf-8"))
+    return 0
+
+
 def cmd_shadow_report(args, config: ScraperConfig) -> int:
     from app.scraper.shadow import shadow_report
     from app.scraper.store import normalize_query
@@ -569,6 +617,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     report.add_argument("--json", action="store_true")
     sub.add_parser("cleanup")
     sub.add_parser("backup")
+    fire = sub.add_parser("firehose", help="switch the all-jobs collector on (default) or off")
+    fire.add_argument("--off", action="store_true")
+    fire.add_argument("--poll-seconds", type=int, default=10)
+    fire.add_argument("--page", type=int, default=50, help="newest jobs looked at per poll (max 50)")
+    fire_report = sub.add_parser("firehose-report")
+    fire_report.add_argument("--query", default="python OR scraping", help="the per-search query to compare with")
+    fire_report.add_argument("--hours", type=float, default=24.0)
+    fire_report.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
 
     load_dotenv(REPO_ROOT / ".env")
@@ -580,5 +636,6 @@ def main(argv: Optional[List[str]] = None) -> int:
         configure_logging()
 
     handlers = {"up": cmd_up, "seed": cmd_seed, "mint": cmd_mint, "status": cmd_status, "backup": cmd_backup,
+                "firehose": cmd_firehose, "firehose-report": cmd_firehose_report,
                 "searches": cmd_searches, "filter": cmd_filter, "cleanup": cmd_cleanup, "shadow-report": cmd_shadow_report, **{r: cmd_role for r in ROLES}}
     return handlers[args.command](args, config)

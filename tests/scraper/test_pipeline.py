@@ -47,11 +47,12 @@ class FakeClient:
         self.details_calls = []
         self.fail_with = None
 
-    def search_ids(self, query_text):
+    def search_ids(self, query_text, count=None):
         self.ids_calls += 1
+        self.ids_counts = getattr(self, "ids_counts", []) + [count]
         if self.fail_with:
             raise self.fail_with
-        return [j.ref for j in self.results]
+        return [j.ref for j in self.results[:count]]
 
     def search_details(self, query_text, count):
         self.details_calls.append(count)
@@ -424,3 +425,22 @@ def test_queue_outage_backs_off_then_recovers(rig, cfg, role, monkeypatch, caplo
     failed = [r for r in caplog.records if r.message == f"{role}_queue_read_failed"]
     assert len(failed) == 5 and sum(1 for r in failed if r.exc_info) == 1   # one traceback per outage
     assert any(r.message == f"{role}_queue_recovered" for r in caplog.records)
+
+
+def test_search_with_its_own_page_size_asks_for_that_many(rig):
+    s = rig.store.upsert_search("", always_poll=True, ids_count=50)
+    rig.client.results = [job(f"~j{i}") for i in range(60)]
+    rig.fetcher.poll(s)
+    assert rig.client.ids_counts[-1] == 50
+    rig.client.results = [job("~new")] + rig.client.results
+    assert rig.fetcher.poll(s) == 1 and rig.client.details_calls[-1] == 3      # position 0 + margin
+
+
+def test_a_page_of_only_new_jobs_is_reported_as_overflow(rig, caplog):
+    s = rig.store.upsert_search("python")
+    rig.client.results = [job(f"~old{i}") for i in range(10)]
+    rig.fetcher.poll(s)
+    rig.client.results = [job(f"~new{i}") for i in range(10)]
+    with caplog.at_level("WARNING"):
+        rig.fetcher.poll(s)
+    assert any(r.getMessage() == "page_overflow" for r in caplog.records)

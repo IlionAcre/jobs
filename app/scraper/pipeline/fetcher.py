@@ -17,6 +17,7 @@ log = logging.getLogger("scraper.fetcher")
 _STALE_AFTER_INTERVALS = 3  # queued work older than this many poll intervals is dropped, not replayed
 _PAUSE_AFTER_NO_TOKEN_S = 60.0
 _HEARTBEAT_EVERY_S = 300.0
+MAX_PAGE = 50  # the API's largest page
 _DETAILS_MARGIN = 2  # extra rows requested in tier 2, in case new jobs arrived since tier 1
 
 
@@ -50,8 +51,9 @@ class Fetcher:
         if search is None or not search.enabled:
             return 0
 
+        page = min(MAX_PAGE, search.ids_count or self._cfg.poller.ids_count)
         self._throttle()
-        refs = self._client.search_ids(search.query_text)
+        refs = self._client.search_ids(search.query_text, count=page)
         new_ids = self._store.record_hits(search_id, refs)
         self._store.record_poll_ok(search_id)
 
@@ -66,7 +68,11 @@ class Fetcher:
         new_set = set(new_ids)
         deepest = max(i for i, ref in enumerate(refs) if ref.job_id in new_set)
         # A job posted between the two requests pushes everything down a row, so ask for a few more.
-        count = min(self._cfg.poller.ids_count, deepest + 1 + _DETAILS_MARGIN)
+        count = min(page, deepest + 1 + _DETAILS_MARGIN)
+        if search.primed and len(refs) == page and len(new_ids) == page:
+            # Everything on the page was new: more jobs arrived since the last poll than one page holds,
+            # so some may have been missed. Bigger page or shorter interval for this search.
+            log.warning("page_overflow", extra={"search_id": search_id, "page": page})
         self._throttle()
         jobs = self._client.search_details(search.query_text, count=count)
         self._store.upsert_jobs(jobs)
