@@ -1,6 +1,6 @@
 @echo off
 rem Makes sure the Podman machine and the Redis container used by the scraper pipeline are running.
-rem Registered as the task "UpworkRedis": at logon AND every 5 minutes (see ops/redis/README.md).
+rem Registered as the task "UpworkRedis": at boot (no login needed) AND every 5 minutes (ops/redis/README.md).
 rem
 rem Why every 5 minutes: the WSL virtual machine can stop without a reboot. On 2026-10-02 a Microsoft Store
 rem update of WSL shut it down and nothing restarted it for 3 h 40 min. When Redis already answers, this

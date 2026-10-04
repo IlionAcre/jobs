@@ -1,14 +1,16 @@
 # Running the scraper pipeline on this Windows PC
 
-Three scheduled tasks (all run as the logged-in user, so they start at logon, not at boot):
+Four scheduled tasks. They run as this user **without anyone logging in** ("S4U": run whether the user is
+logged on or not, no password stored), so everything starts at boot, in the background session:
 
 | task | what it runs | when |
 |---|---|---|
-| **UpworkScraper** | `ops/scraper/start_scraper.cmd` → `python main.py scraper up --log-file logs\scraper.log` | at logon, and every 5 minutes (ignored while it is already running) |
-| **UpworkScraperCheck** | `ops/scraper/healthcheck.py` (outside check) | every 5 minutes |
+| **UpworkScraper** | `ops/scraper/start_scraper.cmd` → `python main.py scraper up --log-file logs\scraper.log` | at boot, and every 5 minutes (ignored while it is already running) |
+| **UpworkScraperCheck** | `ops/scraper/healthcheck.py` (outside check) | at boot, and every 5 minutes |
+| **UpworkRedis** | `ops/redis/start_redis.cmd` (starts the Podman VM and Redis if Redis does not answer) | at boot, and every 5 minutes |
 | **UpworkBackup** | `python main.py scraper backup` | daily at 03:30 (or as soon as possible if the PC was off) |
 
-Redis comes from the `UpworkRedis` task (`ops/redis/README.md`). For Linux see `ops/linux/install.md`.
+Redis details: `ops/redis/README.md`. For Linux see `ops/linux/install.md`.
 
 ## What runs
 
@@ -23,8 +25,10 @@ pwsh ops\scraper\stop_scraper.ps1                # stop everything and keep it s
 pwsh ops\scraper\start_scraper.ps1               # start (refuses if it is already running)
 ```
 
-Nothing shows on the desktop: the tasks run through `ops/run_hidden.vbs`, so there is no console window to
-close by accident. Ending the task in Task Scheduler does **not** stop the pipeline (it only ends the
+Nothing shows on the desktop: the tasks run in the background session (session 0), so there is no window to
+close by accident. Verified 2026-10-03: from a stopped VM, a no-login task started the VM and Redis in 26 s.
+Limitation: the last-resort SeleniumBase minter opens a visible Chrome and has no desktop there; the
+browserless minters it backs up are unaffected. The stop/start scripts need an elevated PowerShell. Ending the task in Task Scheduler does **not** stop the pipeline (it only ends the
 launcher); use the stop script. `scraper up` refuses to start while another one is running.
 
 Status page: http://127.0.0.1:8787 . Logs: `logs/scraper.log` (rotated at start-up, see `log:` in
@@ -67,21 +71,23 @@ The page speaks plain HTTP and must never face the open internet. Use a private 
    refuses to bind to anything but localhost.
 4. Restart the pipeline and open `http://<tailscale address>:8787`.
 
-## Recreating the tasks (PowerShell)
+## Recreating the tasks (elevated PowerShell)
 
 ```powershell
 $root = "<repo>"
-$s = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+$vbs = "$root\ops\run_hidden.vbs"
+$who = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType S4U -RunLevel Limited
+$boot = New-ScheduledTaskTrigger -AtStartup
 $every5 = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Days 3650)
-$logon = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME"
+$s = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
 
-Register-ScheduledTask -TaskName UpworkScraper -Trigger @($logon, $every5) -Settings $s -Force `
-  -Action (New-ScheduledTaskAction -Execute wscript.exe -WorkingDirectory $root -Argument "//B //Nologo `"$root\opsun_hidden.vbs`" `"$root\ops\scraper\start_scraper.cmd`"")
-Register-ScheduledTask -TaskName UpworkRedis -Trigger @($logon, $every5) -Settings $s -Force `
-  -Action (New-ScheduledTaskAction -Execute wscript.exe -WorkingDirectory $root -Argument "//B //Nologo `"$root\opsun_hidden.vbs`" `"$root\opsedis\start_redis.cmd`"")
-Register-ScheduledTask -TaskName UpworkScraperCheck -Trigger @($logon, $every5) -Settings $s -Force `
+Register-ScheduledTask -TaskName UpworkRedis -Principal $who -Trigger @($boot, $every5) -Settings $s -Force `
+  -Action (New-ScheduledTaskAction -Execute wscript.exe -WorkingDirectory $root -Argument "//B //Nologo `"$vbs`" `"$root\ops\redis\start_redis.cmd`"")
+Register-ScheduledTask -TaskName UpworkScraper -Principal $who -Trigger @($boot, $every5) -Settings $s -Force `
+  -Action (New-ScheduledTaskAction -Execute wscript.exe -WorkingDirectory $root -Argument "//B //Nologo `"$vbs`" `"$root\ops\scraper\start_scraper.cmd`"")
+Register-ScheduledTask -TaskName UpworkScraperCheck -Principal $who -Trigger @($boot, $every5) -Settings $s -Force `
   -Action (New-ScheduledTaskAction -Execute "$root\.venv\Scripts\pythonw.exe" -Argument "`"$root\ops\scraper\healthcheck.py`"" -WorkingDirectory $root)
-Register-ScheduledTask -TaskName UpworkBackup -Trigger (New-ScheduledTaskTrigger -Daily -At 03:30) -Settings $s -Force `
+Register-ScheduledTask -TaskName UpworkBackup -Principal $who -Trigger (New-ScheduledTaskTrigger -Daily -At 03:30) -Settings $s -Force `
   -Action (New-ScheduledTaskAction -Execute "$root\.venv\Scripts\pythonw.exe" -Argument "`"$root\main.py`" scraper backup" -WorkingDirectory $root)
 ```
 

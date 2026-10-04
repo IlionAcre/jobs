@@ -10,7 +10,7 @@ Everything durable (searches, jobs, deliveries) lives in Postgres; Redis can be 
 - Container `upwork-redis`: `docker.io/library/redis:7-alpine` (Redis 7.4.11), published on
   `127.0.0.1:6379` only, data on the named volume `upwork-redis-data`,
   `redis-server --appendonly yes --appendfsync everysec` (survives restarts).
-- Scheduled task **UpworkRedis** (at logon and every 5 minutes) runs `ops/redis/start_redis.cmd`: if Redis
+- Scheduled task **UpworkRedis** (at boot, without login, and every 5 minutes) runs `ops/redis/start_redis.cmd`: if Redis
   does not answer it starts the machine and the container, otherwise it exits at once.
   Log: `ops/redis/start_redis.log` (written only when something had to be started).
 
@@ -21,7 +21,7 @@ podman machine start
 podman volume create upwork-redis-data
 podman run -d --name upwork-redis --restart=always --cgroups=disabled -p 127.0.0.1:6379:6379 -v upwork-redis-data:/data docker.io/library/redis:7-alpine redis-server --appendonly yes --appendfsync everysec
 ```
-Register the task with PowerShell (at logon and every 5 minutes), the same way as the tasks in
+Register the task with PowerShell (at boot without login, and every 5 minutes), exactly as in
 `ops/scraper/README.md`, with `cmd.exe /c "<repo>\ops\redis\start_redis.cmd"` as the action.
 
 ## Things that are not obvious
@@ -37,7 +37,9 @@ Register the task with PowerShell (at logon and every 5 minutes), the same way a
   `podman-restart.service` is disabled and can't be enabled over `podman machine ssh` ("Access denied").
   The logon task starts the container explicitly instead. Verified: from a stopped machine, Redis is back
   ~20 s after the task runs, data intact.
-- The task runs at **logon**, not at boot: WSL is per-user, so Redis is down until this user logs in.
+- Since 2026-10-03 the task runs at **boot without login** (S4U). WSL is per-user, but an S4U task of the
+  same user can start and use the VM: tested from a stopped VM, Redis back in 26 s, still up after the
+  task ended.
 - Use `REDIS_URL=redis://127.0.0.1:6379/0`. With `localhost` the first connection takes ~2 s (IPv6 is tried
   first; Redis is only published on IPv4).
 - Each Redis call from Windows costs ~1.5 ms through the WSL port forward (inside the VM: ~0.8 ms p50,
