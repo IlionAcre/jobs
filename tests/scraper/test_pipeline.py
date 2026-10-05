@@ -289,6 +289,17 @@ def test_format_job_variants():
     assert "💵 Hourly · Expert" in format_job(job(job_type="hourly", fixed_amount=None), now=NOW)
     assert "…" not in format_job(job(), description_chars=0, now=NOW) and "Scrape a site" not in format_job(job(), description_chars=0, now=NOW)
     assert "Posted 5 min ago" in format_job(job(published_s_ago=300), now=NOW)
+
+
+def test_format_job_explains_a_job_held_between_creation_and_publishing():
+    pub = NOW - timedelta(seconds=9)
+    held = job(create_time=pub - timedelta(hours=3, seconds=6), publish_time=pub)
+    assert "⏱ Went live 9 s ago · created 3 h ago (Upwork shows the created time)" in format_job(held, now=NOW)
+    one_minute = job(create_time=pub - timedelta(seconds=75), publish_time=pub)
+    assert "⏱ Went live 9 s ago · created 84 s ago" in format_job(one_minute, now=NOW)
+    quick = job(create_time=pub - timedelta(seconds=40), publish_time=pub)
+    assert "⏱ Posted 9 s ago" in format_job(quick, now=NOW)                  # under a minute: one time is enough
+    assert "⏱ Posted 9 s ago" in format_job(job(create_time=None, publish_time=pub), now=NOW)
     assert "🔎 python OR react" in format_job(job(), now=NOW, search="python OR react")
 
 

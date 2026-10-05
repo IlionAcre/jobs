@@ -51,7 +51,15 @@ def format_job(job: Job, *, description_chars: int = 300, now: Optional[datetime
     lines: List[str] = [f"<b>{escape(job.title or '(no title)')}</b>", f"💵 {escape(meta)}"]
     if job.publish_time is not None:
         now = now or datetime.now(timezone.utc)
-        lines.append(f"⏱ Posted {_ago((now - job.publish_time).total_seconds())}")
+        live = _ago((now - job.publish_time).total_seconds())
+        held = (job.publish_time - job.create_time).total_seconds() if job.create_time is not None else 0
+        if held >= 60:
+            # Upwork's page dates a job from when the client created it; it only became visible when it was
+            # published. ~8 % are held about 3 h in between, so say both or the two look contradictory.
+            created = _ago((now - job.create_time).total_seconds())
+            lines.append(f"⏱ Went live {live} · created {created} (Upwork shows the created time)")
+        else:
+            lines.append(f"⏱ Posted {live}")
     if search:
         lines.append(f"🔎 {escape(search)}")
     if description_chars and job.description:
